@@ -56,6 +56,12 @@ export const api = {
   updateSettings: (id: number, body: Partial<Settings>) => req<Settings>(`/api/properties/${id}/settings`, { ...json(body), method: "PATCH" }),
   extractLease: (tenantId: number, file: File) => { const fd = new FormData(); fd.append("file", file); return req<{ extraction: LeaseExtraction; file_name: string }>(`/api/tenants/${tenantId}/lease/extract`, { method: "POST", body: fd }); },
   sampleLease: (tenantId: number) => req<{ extraction: LeaseExtraction; file_name: string }>(`/api/tenants/${tenantId}/lease/sample`, { method: "POST" }),
+  documents: (pid: number) => req<Doc[]>(`/api/properties/${pid}/documents`),
+  uploadDocument: (pid: number, file: File, meta?: Record<string, string>) => { const fd = new FormData(); fd.append("file", file); for (const [k, v] of Object.entries(meta ?? {})) fd.append(k, v); return req<Doc>(`/api/properties/${pid}/documents`, { method: "POST", body: fd }); },
+  updateDocument: (id: number, body: Partial<Doc>) => req<Doc>(`/api/documents/${id}`, { ...json(body), method: "PATCH" }),
+  deleteDocument: (id: number) => req<void>(`/api/documents/${id}`, { method: "DELETE" }),
+  extractFromDocument: (id: number) => req<{ extraction: Extraction; file_name: string; document_id: number }>(`/api/documents/${id}/extract-invoice`, { method: "POST" }),
+  linkDocumentInvoice: (id: number, invoiceId: number) => req<Doc>(`/api/documents/${id}/link-invoice`, json({ invoice_id: invoiceId })),
   saveLease: (tenantId: number, body: Lease) => req<Lease>(`/api/tenants/${tenantId}/lease`, { ...json(body), method: "PUT" }),
   createUnit: (pid: number, body: Partial<Unit>) => req<Unit>(`/api/properties/${pid}/units`, json(body)),
   updateUnit: (id: number, body: Partial<Unit>) => req<Unit>(`/api/units/${id}`, { ...json(body), method: "PATCH" }),
@@ -69,6 +75,13 @@ export const api = {
 };
 
 export const eur = (cents: number) => (cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+export type DocKind = "invoice" | "contract" | "notice" | "insurance" | "meter" | "correspondence" | "statement" | "other";
+export type Doc = {
+  id: number | string; kind: DocKind; title: string; provider: string | null; doc_date: string | null; amount_cents: number | null;
+  tenant_id: number | null; tenant_name: string | null; invoice_id: number | null; file_name: string | null; mime: string; size_bytes: number | null;
+  notes: string | null; created_at: string; source: string; url: string; booked?: boolean; lease_confirmed?: boolean; ai_confidence?: number;
+};
+export const DOC_KINDS = ["invoice", "contract", "notice", "insurance", "meter", "correspondence", "statement", "other"] as const;
 export const CATEGORIES = ["property_tax", "water_sewage", "rainwater", "heating", "hot_water", "elevator", "street_cleaning", "waste", "cleaning", "pest_control", "garden", "lighting", "chimney", "insurance", "caretaker", "cable", "laundry", "other"] as const;
 export const HEATING_TYPES = ["gas", "oil", "district", "heat_pump", "pellets", "decentral"] as const;
 export const KEYS = ["area", "persons", "units", "heating", "water"] as const;

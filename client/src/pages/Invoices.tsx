@@ -119,7 +119,7 @@ function Row({ inv, onEdit, onChange }: { inv: Invoice; onEdit: () => void; onCh
   );
 }
 
-function InvoiceForm({ title, sub, initial, onClose, onSave, onDelete }: { title: string; sub?: React.ReactNode; initial: Extraction; onClose: () => void; onSave: (e: Extraction) => Promise<void>; onDelete?: () => Promise<void> }) {
+export function InvoiceForm({ title, sub, initial, onClose, onSave, onDelete }: { title: string; sub?: React.ReactNode; initial: Extraction; onClose: () => void; onSave: (e: Extraction) => Promise<void>; onDelete?: () => Promise<void> }) {
   const t = useT();
   const [e, setE] = useState(initial);
   const [saving, setSaving] = useState(false);

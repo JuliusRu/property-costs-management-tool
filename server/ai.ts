@@ -157,3 +157,53 @@ export function coerceLease(p: Partial<LeaseExtraction>): LeaseExtraction {
     notes: String(p.notes ?? "").slice(0, 500),
   };
 }
+
+// ---------- generic document classification for the archive ----------
+export type DocClassification = { kind: "invoice" | "contract" | "notice" | "insurance" | "meter" | "correspondence" | "other"; title: string; provider: string; doc_date: string | null; amount_cents: number | null; confidence: number };
+export async function classifyDocument(input: { text?: string; imageBase64?: string; mime?: string; fileName: string }): Promise<DocClassification> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
+  const model = process.env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4.5";
+  const content: unknown[] = [];
+  if (input.text) content.push({ type: "text", text: `File name: ${input.fileName}\n\n${input.text.slice(0, 12000)}` });
+  if (input.imageBase64) { content.push({ type: "text", text: `File name: ${input.fileName}` }); content.push({ type: "image_url", image_url: { url: `data:${input.mime ?? "image/png"};base64,${input.imageBase64}` } }); }
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "HTTP-Referer": process.env.APP_URL ?? "http://localhost", "X-Title": "Billnest" },
+    body: JSON.stringify({ model, temperature: 0, messages: [
+      { role: "system", content: `Classify a document from a German landlord's files. Return ONLY JSON: { kind: one of invoice, contract, notice (official notice such as Grundsteuerbescheid/Gebührenbescheid), insurance (policy or certificate), meter (meter reading / Ablesung), correspondence, other; title: short German title (max 60 chars, e.g. "Grundsteuerbescheid 2025"); provider: sender/company; doc_date: ISO date of the document or null; amount_cents: total amount in cents if it is an invoice or notice with an amount, else null; confidence: 0..1 }` },
+      { role: "user", content },
+    ] }),
+  });
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as { choices: { message: { content: string } }[] };
+  const raw = (json.choices[0]?.message?.content ?? "").replace(/^```(?:json)?/m, "").replace(/```$/m, "").trim();
+  const p = JSON.parse(raw) as Partial<DocClassification>;
+  const kinds = ["invoice", "contract", "notice", "insurance", "meter", "correspondence", "other"];
+  return {
+    kind: kinds.includes(String(p.kind)) ? (p.kind as DocClassification["kind"]) : "other",
+    title: String(p.title ?? "").slice(0, 120), provider: String(p.provider ?? "").slice(0, 120),
+    doc_date: typeof p.doc_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(p.doc_date) ? p.doc_date : null,
+    amount_cents: p.amount_cents == null ? null : Math.max(0, Math.round(Number(p.amount_cents)) || 0),
+    confidence: Math.min(1, Math.max(0, Number(p.confidence ?? 0.5))),
+  };
+}
+
+/** No-AI fallback: keyword classification from the text layer. Good enough to sort the archive; the landlord can correct. */
+export function heuristicClassify(text: string, fileName: string): DocClassification {
+  const t = `${fileName}\n${text}`.toLowerCase();
+  const kind: DocClassification["kind"] =
+    /mietvertrag|mietvertrages|vertrag/.test(t) ? "contract" :
+    /bescheid/.test(t) ? "notice" :
+    /versicherung|police|versicherungsschein/.test(t) ? "insurance" :
+    /zählerstand|zaehlerstand|ablesung|zähler/.test(t) ? "meter" :
+    /rechnung|invoice|abrechnung|gebühren/.test(t) ? "invoice" :
+    /sehr geehrte|mit freundlichen grüßen/.test(t) ? "correspondence" : "other";
+  const dateM = text.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+  const doc_date = dateM ? `${dateM[3]}-${dateM[2]}-${dateM[1]}` : null;
+  const amounts = [...text.matchAll(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*€/g)].map((m) => Math.round(Number(m[1].replace(/\./g, "").replace(",", ".")) * 100));
+  const amount_cents = kind === "invoice" || kind === "notice" ? (amounts.length ? Math.max(...amounts) : null) : null;
+  const firstLine = text.split("\n").map((l) => l.trim()).find((l) => l.length > 3 && l.length < 80) ?? "";
+  const titleM = text.match(/^(.*(?:bescheid|rechnung|vertrag|police|versicherungsschein|ablesung)[^\n]{0,40})$/im);
+  return { kind, title: (titleM?.[1] ?? fileName.replace(/\.[^.]+$/, "")).trim().slice(0, 120), provider: firstLine.split("·")[0].trim().slice(0, 120), doc_date, amount_cents, confidence: 0.4 };
+}

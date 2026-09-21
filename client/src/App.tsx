@@ -7,6 +7,7 @@ import Login from "./pages/Login";
 import Building from "./pages/Building";
 import Invoices from "./pages/Invoices";
 import Statements from "./pages/Statements";
+import Documents from "./pages/Documents";
 import Portal from "./pages/Portal";
 import Landing from "./pages/Landing";
 
@@ -26,6 +27,7 @@ function Shell({ property, properties, select, reload }: { property: Property; p
             <NavLink to="/app" end className={link}>{t("nav.building")}</NavLink>
             <NavLink to="/app/invoices" className={link}>{t("nav.invoices")}</NavLink>
             <NavLink to="/app/statements" className={link}>{t("nav.statements")}</NavLink>
+            <NavLink to="/app/documents" className={link}>{t("nav.documents")}</NavLink>
           </nav>
           <div className="ml-auto flex flex-wrap items-center gap-3 text-sm">
             <select className="rounded-md border border-white/20 bg-transparent px-2 py-1 text-sm text-white" value={property.id} onChange={(e) => { if (e.target.value === "new") setAdding(true); else select(Number(e.target.value)); }}>
@@ -44,6 +46,7 @@ function Shell({ property, properties, select, reload }: { property: Property; p
           <Route path="/" element={<Building property={property} onChange={reload} />} />
           <Route path="/invoices" element={<Invoices property={property} />} />
           <Route path="/statements" element={<Statements property={property} onChange={reload} />} />
+          <Route path="/documents" element={<Documents property={property} />} />
           <Route path="*" element={<Navigate to="/app" />} />
         </Routes>
       </main>

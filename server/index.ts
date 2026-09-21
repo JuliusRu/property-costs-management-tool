@@ -3,12 +3,12 @@ import express from "express";
 import multer from "multer";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, statSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
-import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, newAccessCode, settingsOf, leaseOf, type Category, type AllocationKey, type Tenant, type HeatingType } from "./db.js";
+import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, DOC_KINDS, newAccessCode, settingsOf, leaseOf, type Category, type AllocationKey, type Tenant, type HeatingType, type DocKind } from "./db.js";
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
-import { extractInvoice, extractLease, coerceLease, type Extraction, type LeaseExtraction } from "./ai.js";
+import { extractInvoice, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
 import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
@@ -350,6 +350,94 @@ app.post("/api/properties/:id/invoices/sync", async (req, res) => {
   }
   if (usedFallback) errors.push("AI extraction unavailable (no OPENROUTER_API_KEY or API error) — used stored sample extractions instead.");
   res.json({ imported, errors });
+});
+
+// ---------- document archive ----------
+// One list for everything on file: free uploads, booked invoices with a PDF, scanned leases, generated statements.
+app.get("/api/properties/:id/documents", (req, res) => {
+  const pid = num(req.params.id);
+  const tenants = q.tenants(pid);
+  const unitOf = new Map(q.units(pid).map((u) => [u.id, u.label]));
+  const rows: unknown[] = [];
+  for (const d of q.documents(pid)) rows.push({ ...d, source: "upload", url: `/api/documents/${d.id}/file`, tenant_name: d.tenant_id ? tenants.find((t) => t.id === d.tenant_id)?.name ?? null : null });
+  for (const inv of q.invoices(pid)) if (inv.file_name) rows.push({
+    id: `inv-${inv.id}`, kind: "invoice", title: inv.description || `${inv.provider} ${inv.period_start.slice(0, 4)}`, provider: inv.provider, doc_date: inv.period_end,
+    amount_cents: inv.amount_cents, tenant_id: null, tenant_name: null, invoice_id: inv.id, file_name: inv.file_name, mime: "application/pdf",
+    size_bytes: fileSize(inv.file_name), notes: inv.category, created_at: inv.created_at, source: inv.source, url: `/api/invoices/${inv.id}/file`, booked: true,
+  });
+  for (const t of tenants) { const l = leaseOf(t); if (l.source_file) rows.push({
+    id: `lease-${t.id}`, kind: "contract", title: `Mietvertrag ${t.name}`, provider: t.name, doc_date: t.move_in, amount_cents: null, tenant_id: t.id, tenant_name: t.name,
+    invoice_id: null, file_name: l.source_file, mime: "application/pdf", size_bytes: fileSize(l.source_file), notes: unitOf.get(t.unit_id) ?? null, created_at: t.move_in ?? "", source: "lease", url: `/api/tenants/${t.id}/lease/file`, lease_confirmed: l.confirmed,
+  }); }
+  for (const t of tenants) for (const st of q.statementsForTenant(t.id)) rows.push({
+    id: `stmt-${st.id}`, kind: "statement", title: `Betriebskostenabrechnung ${st.year} – ${t.name}`, provider: "Billnest", doc_date: st.created_at.slice(0, 10), amount_cents: st.balance_cents,
+    tenant_id: t.id, tenant_name: t.name, invoice_id: null, file_name: null, mime: "application/pdf", size_bytes: null, notes: st.sent_at ? "sent" : "draft", created_at: st.created_at, source: "generated", url: `/api/statements/${st.id}/pdf`,
+  });
+  res.json(rows);
+});
+function fileSize(name: string): number | null { try { return statSync(path.join(UPLOAD_DIR, name)).size; } catch { return null; } }
+
+// Upload → optional AI classification (proposal only) → stored with the landlord's metadata.
+app.post("/api/properties/:id/documents", upload.single("file"), async (req, res) => {
+  const pid = num(req.params.id);
+  if (!q.property(pid)) return res.status(404).end();
+  if (!req.file) return res.status(400).json({ error: "file missing" });
+  const mime = req.file.mimetype;
+  const isPdf = mime === "application/pdf" || req.file.originalname.toLowerCase().endsWith(".pdf");
+  if (!isPdf && !mime.startsWith("image/")) return res.status(400).json({ error: "PDF or image only" });
+  const safeName = `${Date.now()}-doc-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  writeFileSync(path.join(UPLOAD_DIR, safeName), req.file.buffer);
+  // AI proposal; if unavailable, fall back to the file name so the upload never fails.
+  let cls = { kind: "other" as DocKind, title: req.file.originalname.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").slice(0, 120), provider: "", doc_date: null as string | null, amount_cents: null as number | null, confidence: 0 };
+  let text = "";
+  try { if (isPdf) text = (await pdfParse(req.file.buffer)).text; } catch { /* scanned PDF without text layer */ }
+  try {
+    cls = isPdf ? await classifyDocument({ text, fileName: req.file.originalname }) : await classifyDocument({ imageBase64: req.file.buffer.toString("base64"), mime, fileName: req.file.originalname });
+  } catch { if (text) cls = heuristicClassify(text, req.file.originalname); }
+  const b = req.body ?? {};
+  const kind = (DOC_KINDS as readonly string[]).includes(b.kind) ? (b.kind as DocKind) : cls.kind;
+  const r = db.prepare("INSERT INTO documents (property_id, kind, title, provider, doc_date, amount_cents, tenant_id, file_name, mime, size_bytes, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(pid, kind, String(b.title || cls.title || req.file.originalname).slice(0, 120), String(b.provider || cls.provider || "").slice(0, 120) || null,
+      isoOrNull(b.doc_date) ?? cls.doc_date, b.amount_cents != null && b.amount_cents !== "" ? Math.round(Number(b.amount_cents)) : cls.amount_cents,
+      b.tenant_id ? num(b.tenant_id) : null, safeName, isPdf ? "application/pdf" : mime, req.file.size, b.notes ? String(b.notes).slice(0, 500) : null);
+  res.status(201).json({ ...q.document(Number(r.lastInsertRowid)), ai_confidence: cls.confidence });
+});
+app.patch("/api/documents/:id", (req, res) => {
+  const d = q.document(num(req.params.id));
+  if (!d) return res.status(404).end();
+  const b = req.body ?? {};
+  db.prepare("UPDATE documents SET kind = ?, title = ?, provider = ?, doc_date = ?, amount_cents = ?, tenant_id = ?, notes = ? WHERE id = ?")
+    .run((DOC_KINDS as readonly string[]).includes(b.kind) ? b.kind : d.kind, String(b.title ?? d.title).slice(0, 120), b.provider === undefined ? d.provider : (String(b.provider).slice(0, 120) || null),
+      "doc_date" in b ? isoOrNull(b.doc_date) : d.doc_date, "amount_cents" in b ? (b.amount_cents === null || b.amount_cents === "" ? null : Math.round(Number(b.amount_cents))) : d.amount_cents,
+      "tenant_id" in b ? (b.tenant_id ? num(b.tenant_id) : null) : d.tenant_id, "notes" in b ? (b.notes ? String(b.notes).slice(0, 500) : null) : d.notes, d.id);
+  res.json(q.document(d.id));
+});
+app.delete("/api/documents/:id", (req, res) => {
+  const d = q.document(num(req.params.id));
+  if (d) { db.prepare("DELETE FROM documents WHERE id = ?").run(d.id); try { unlinkSync(path.join(UPLOAD_DIR, d.file_name)); } catch { /* already gone */ } }
+  res.status(204).end();
+});
+app.get("/api/documents/:id/file", (req, res) => {
+  const d = q.document(num(req.params.id));
+  if (!d) return res.status(404).end();
+  res.setHeader("Content-Type", d.mime);
+  res.sendFile(path.join(UPLOAD_DIR, d.file_name));
+});
+// Book an archived invoice: run the invoice extraction on the stored file and hand it to the review form (not saved yet).
+app.post("/api/documents/:id/extract-invoice", async (req, res) => {
+  const d = q.document(num(req.params.id));
+  if (!d) return res.status(404).end();
+  try {
+    const buf = readFileSync(path.join(UPLOAD_DIR, d.file_name));
+    const r = await extractFromBuffer(buf, d.title + (d.mime === "application/pdf" ? ".pdf" : ""), d.mime);
+    res.json({ ...r, document_id: d.id });
+  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
+app.post("/api/documents/:id/link-invoice", (req, res) => {
+  const d = q.document(num(req.params.id));
+  if (!d) return res.status(404).end();
+  db.prepare("UPDATE documents SET invoice_id = ? WHERE id = ?").run(num(req.body?.invoice_id), d.id);
+  res.json(q.document(d.id));
 });
 
 // ---------- statements ----------

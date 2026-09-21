@@ -129,6 +129,22 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (property_id, year)
 );
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'other',
+  title TEXT NOT NULL,
+  provider TEXT,
+  doc_date TEXT,
+  amount_cents INTEGER,
+  tenant_id INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
+  invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,
+  file_name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS waitlist (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL UNIQUE,
@@ -218,7 +234,17 @@ export function settingsOf(p: Property): PropertySettings {
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(p.settings_json || "{}") }; } catch { return { ...DEFAULT_SETTINGS }; }
 }
 
+export const DOC_KINDS = ["invoice", "contract", "notice", "insurance", "meter", "correspondence", "other"] as const;
+export type DocKind = (typeof DOC_KINDS)[number];
+export type Document = {
+  id: number; property_id: number; kind: DocKind; title: string; provider: string | null; doc_date: string | null;
+  amount_cents: number | null; tenant_id: number | null; invoice_id: number | null; file_name: string; mime: string;
+  size_bytes: number; notes: string | null; created_at: string;
+};
+
 export const q = {
+  documents: (propertyId: number) => db.prepare("SELECT * FROM documents WHERE property_id = ? ORDER BY COALESCE(doc_date, created_at) DESC, id DESC").all(propertyId) as unknown as Document[],
+  document: (id: number) => db.prepare("SELECT * FROM documents WHERE id = ?").get(id) as unknown as Document | undefined,
   properties: () => db.prepare("SELECT * FROM properties ORDER BY id").all() as unknown as Property[],
   property: (id: number) => db.prepare("SELECT * FROM properties WHERE id = ?").get(id) as unknown as Property | undefined,
   units: (propertyId: number) => db.prepare("SELECT * FROM units WHERE property_id = ? ORDER BY id").all(propertyId) as unknown as Unit[],

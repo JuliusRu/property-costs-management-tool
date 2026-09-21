@@ -88,3 +88,19 @@ for (const s of samples) {
   doc.end();
   console.log("wrote samples/leases/mietvertrag-oeztuerk.pdf");
 }
+
+// ---- a notice for the document archive demo ----
+{
+  mkdirSync("samples/docs", { recursive: true });
+  const doc = new PDFDocument({ size: "A4", margin: 60 });
+  doc.pipe(createWriteStream("samples/docs/grundsteuerbescheid-2025.pdf"));
+  doc.fontSize(14).text("Stadt Aachen · Fachbereich Steuern").fontSize(9).fillColor("#555").text("Lagerhausstraße 20, 52064 Aachen").fillColor("#000").moveDown(2);
+  doc.fontSize(10).text("Herrn Julius Rummel, Lindenstraße 12, 52062 Aachen").moveDown(2);
+  doc.fontSize(14).text("Grundsteuerbescheid 2025").moveDown(0.5).fontSize(10)
+    .text("Steuernummer 201/5023/0917 · Objekt: Lindenstraße 12, 52062 Aachen").text("Bescheiddatum: 12.01.2025").moveDown()
+    .text("Grundsteuer B: Grundsteuermessbetrag 164,00 € × Hebesatz 600 % = 984,00 € jährlich.")
+    .text("Fällig in vier Raten zu je 246,00 € am 15.02., 15.05., 15.08. und 15.11.2025.").moveDown()
+    .text("Dieser Bescheid gilt bis auf Weiteres.");
+  doc.end();
+  console.log("wrote samples/docs/grundsteuerbescheid-2025.pdf");
+}
