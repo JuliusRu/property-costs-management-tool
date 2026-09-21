@@ -202,9 +202,10 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     const acc = new Map<number, { share: number; days: number; parts: string[] }>();
     let ok = true;
     for (const c of comps) {
-      const bases = units.map((u) => (participates(u, inv.category) ? basis(u, c.key) : 0));
+      // Invoice addressed to one unit → 100 % to that unit (still day-exact by occupancy); otherwise by key across the pool.
+      const bases = inv.unit_id ? units.map((u) => (u.id === inv.unit_id ? 1 : 0)) : units.map((u) => (participates(u, inv.category) ? basis(u, c.key) : 0));
       const basisTotal = bases.reduce((s, b) => s + b, 0);
-      if (basisTotal === 0) { checks.push({ level: "BLOCKER", code: "NO_BASIS", message: `${inv.provider}: allocation key "${c.key}" has no data on any unit.`, hint: "Enter the values on the units or choose a different key." }); ok = false; break; }
+      if (basisTotal === 0) { checks.push(inv.unit_id ? { level: "BLOCKER", code: "NO_UNIT", message: `${inv.provider}: the unit this invoice is addressed to no longer exists.`, hint: "Assign the invoice to a unit or to the whole building." } : { level: "BLOCKER", code: "NO_BASIS", message: `${inv.provider}: allocation key "${c.key}" has no data on any unit.`, hint: "Enter the values on the units or choose a different key." }); ok = false; break; }
       const unitShares = splitCents(c.amount, bases);
       units.forEach((u, i) => {
         const unitShare = unitShares[i];
@@ -219,7 +220,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
           let share = parts[j];
           const lease = leases.get(t.id)!;
           const prefix = c.label ? `${c.label}: ` : "";
-          let f = `${prefix}${eur(c.amount)} × ${bases[i]} ${KEY_UNIT[c.key]} / ${basisTotal} ${KEY_UNIT[c.key]} = ${eur(unitShare)}`;
+          let f = inv.unit_id ? `${prefix}${eur(c.amount)} directly for ${u.label} = ${eur(unitShare)}` : `${prefix}${eur(c.amount)} × ${bases[i]} ${KEY_UNIT[c.key]} / ${basisTotal} ${KEY_UNIT[c.key]} = ${eur(unitShare)}`;
           if (c.prorated && days !== diy) f += ` × ${days}/${diy} days = ${eur(share)}`;
           // Lease rules rank above the building default. Whatever the lease shifts is the landlord's gain or loss.
           const cat = inv.category as Category;
@@ -227,7 +228,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
             leaseDiff += share;
             f = flatRate.has(t.id) ? `flat rate — not charged (${eur(share)} stays with the landlord)` : `not agreed in the lease — not charged (${eur(share)} stays with the landlord)`;
             share = 0;
-          } else if (lease.key_overrides[cat] && lease.key_overrides[cat] !== c.key && !(inv.allocation_key === "heating" && !settings.heizkv_exempt)) {
+          } else if (!inv.unit_id && lease.key_overrides[cat] && lease.key_overrides[cat] !== c.key && !(inv.allocation_key === "heating" && !settings.heizkv_exempt)) {
             const k2 = lease.key_overrides[cat]!;
             const b2 = units.map((x) => (participates(x, inv.category) ? basis(x, k2) : 0));
             const tot2 = b2.reduce((a, b) => a + b, 0);
@@ -250,6 +251,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     for (const t of tenants) {
       const a = acc.get(t.id);
       if (!a) continue;
+      if (inv.unit_id && t.unit_id !== inv.unit_id) continue; // a unit invoice only appears on that unit's statement
       const formula = a.parts.length > 1 ? `${a.parts.join("; ")} → ${eur(a.share)}` : a.parts[0];
       const total = comps.reduce((s, c) => s + c.amount, 0);
       const excludedNote = excluded > 0 ? ` (${eur(excluded)} not allocable excluded)` : "";

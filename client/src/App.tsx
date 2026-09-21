@@ -8,6 +8,7 @@ import Building from "./pages/Building";
 import Invoices from "./pages/Invoices";
 import Statements from "./pages/Statements";
 import Documents from "./pages/Documents";
+import Tenants from "./pages/Tenants";
 import Portal from "./pages/Portal";
 import Landing from "./pages/Landing";
 import { Impressum, Datenschutz } from "./pages/Legal";
@@ -26,6 +27,7 @@ function Shell({ property, properties, select, reload }: { property: Property; p
           <Wordmark light />
           <nav className="flex items-center gap-1">
             <NavLink to="/app" end className={link}>{t("nav.building")}</NavLink>
+            <NavLink to="/app/tenants" className={link}>{t("nav.tenants")}</NavLink>
             <NavLink to="/app/invoices" className={link}>{t("nav.invoices")}</NavLink>
             <NavLink to="/app/statements" className={link}>{t("nav.statements")}</NavLink>
             <NavLink to="/app/documents" className={link}>{t("nav.documents")}</NavLink>
@@ -48,6 +50,7 @@ function Shell({ property, properties, select, reload }: { property: Property; p
           <Route path="/invoices" element={<Invoices property={property} />} />
           <Route path="/statements" element={<Statements property={property} onChange={reload} />} />
           <Route path="/documents" element={<Documents property={property} />} />
+          <Route path="/tenants" element={<Tenants properties={properties} select={(id) => { select(id); nav("/app"); }} />} />
           <Route path="*" element={<Navigate to="/app" />} />
         </Routes>
       </main>

@@ -128,7 +128,7 @@ export default function Documents({ property }: { property: Property }) {
       )}
 
       {edit && <DocModal doc={edit} property={property} onClose={() => setEdit(null)} onSaved={async () => { setEdit(null); await load(); }} />}
-      {book && <InvoiceForm title={t("i.review.title")} sub={t("i.review.sub", { f: book.doc.title, p: (book.extraction.extraction.confidence * 100).toFixed(0) })} initial={book.extraction.extraction} onClose={() => setBook(null)} onSave={async (e) => {
+      {book && <InvoiceForm units={property.units} title={t("i.review.title")} sub={t("i.review.sub", { f: book.doc.title, p: (book.extraction.extraction.confidence * 100).toFixed(0) })} initial={book.extraction.extraction} onClose={() => setBook(null)} onSave={async (e) => {
         const inv = await api.createInvoice(property.id, { ...e, source: "upload", file_name: book.extraction.file_name, ai_confidence: e.confidence, ai_notes: e.notes } as never);
         await api.linkDocumentInvoice(Number(book.doc.id), inv.id);
         setBook(null); await load();

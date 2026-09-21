@@ -43,6 +43,12 @@ export default function Portal() {
                 <div className={`display num text-4xl ${s.balance_cents > 0 ? "text-ember" : "text-mint"}`}>{(Math.abs(s.balance_cents) / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" })}</div>
               </div>
             </div>
+            {s.balance_cents !== 0 && (
+              <div className={`px-6 py-2 text-sm ${s.payment_status === "open" ? "bg-sun-soft text-[#8a5a00]" : "bg-mint-soft text-mint"}`}>
+                {s.payment_status === "paid" ? t("p.pay.paid", { d: s.paid_at ?? "" }) : s.payment_status === "refunded" ? t("p.pay.refunded", { d: s.paid_at ?? "" }) : s.payment_status === "waived" ? t("pay.waived") :
+                  s.balance_cents > 0 ? t("p.pay.open.due", { a: (s.balance_cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" }) }) : t("p.pay.open.refund", { a: (-s.balance_cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" }) })}
+              </div>
+            )}
             <table className="w-full border-t border-line text-sm">
               <thead className="text-left text-xs text-mute"><tr><th className="px-6 py-2 font-medium">{t("p.th.cost")}</th><th className="px-6 py-2 font-medium">{t("p.th.calc")}</th><th className="px-6 py-2 text-right font-medium">{t("p.th.share")}</th></tr></thead>
               <tbody className="divide-y divide-line">

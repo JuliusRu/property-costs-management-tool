@@ -137,6 +137,16 @@ app.post("/api/waitlist", (req, res) => {
 app.use("/api", requireLandlord);
 
 // ---------- properties ----------
+// All tenancies across buildings, with their latest statement and payment status — the "Tenants" page.
+app.get("/api/tenants", (_req, res) => {
+  const rows = q.allTenants().map((t) => {
+    const st = q.statementsForTenant(t.id)[0];
+    return { ...t, password_hash: undefined, lease_json: undefined, registered: !!t.registered_at, lease_rules: (() => { const l = leaseOf(t); return Object.keys(l.key_overrides).length > 0 || l.excluded_categories.length > 0 || l.prepayment_type === "pauschale"; })(),
+      latest: st ? { id: st.id, year: st.year, balance_cents: st.balance_cents, sent_at: st.sent_at, payment_status: st.payment_status, paid_at: st.paid_at } : null };
+  });
+  res.json(rows);
+});
+
 app.get("/api/properties", (_req, res) => {
   res.json(q.properties().map((p) => ({ ...p, settings: settingsOf(p), settings_json: undefined, units: q.units(p.id), tenants: q.tenants(p.id).map((t) => ({ ...t, lease: leaseOf(t), lease_json: undefined, password_hash: undefined, registered: !!t.registered_at })) })));
 });
@@ -289,10 +299,12 @@ function insertInvoice(propertyId: number, b: Record<string, unknown>) {
   if (!Number.isFinite(amount) || amount < 0) throw new Error("amount_cents invalid");
   for (const d of [b.period_start, b.period_end]) if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) throw new Error("period invalid");
   const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? 0)) || 0));
+  const unitId = b.unit_id ? num(b.unit_id) : null;
+  if (unitId && q.unit(unitId)?.property_id !== propertyId) throw new Error("unit does not belong to this building");
   const r = db.prepare(
-    `INSERT INTO invoices (property_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, allocable, non_allocable_cents, non_allocable_reason, co2_cents, energy_kwh, source, file_name, ai_confidence, ai_notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(propertyId, String(b.provider ?? "").slice(0, 120), category, String(b.description ?? "").slice(0, 200), amount,
+    `INSERT INTO invoices (property_id, unit_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, allocable, non_allocable_cents, non_allocable_reason, co2_cents, energy_kwh, source, file_name, ai_confidence, ai_notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(propertyId, unitId, String(b.provider ?? "").slice(0, 120), category, String(b.description ?? "").slice(0, 200), amount,
     String(b.period_start), String(b.period_end), key, b.allocable === false ? 0 : 1, nonAlloc, b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null,
     Math.max(0, Math.round(Number(b.co2_cents ?? 0)) || 0), Math.max(0, Number(b.energy_kwh ?? 0) || 0),
     String(b.source ?? "manual"), b.file_name ? String(b.file_name) : null, b.ai_confidence == null ? null : Number(b.ai_confidence), b.ai_notes ? String(b.ai_notes) : null);
@@ -312,8 +324,10 @@ app.patch("/api/invoices/:id", (req, res) => {
   const key = keys.includes(b.allocation_key) ? b.allocation_key : inv.allocation_key;
   const amount = Math.round(Number(b.amount_cents ?? inv.amount_cents));
   const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? inv.non_allocable_cents)) || 0));
-  db.prepare(`UPDATE invoices SET provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, allocable=?, non_allocable_cents=?, non_allocable_reason=?, co2_cents=?, energy_kwh=? WHERE id=?`)
-    .run(String(b.provider ?? inv.provider).slice(0, 120), category, String(b.description ?? inv.description ?? "").slice(0, 200),
+  const unitId = "unit_id" in b ? (b.unit_id ? num(b.unit_id) : null) : inv.unit_id;
+  if (unitId && q.unit(unitId)?.property_id !== inv.property_id) return res.status(400).json({ error: "unit does not belong to this building" });
+  db.prepare(`UPDATE invoices SET unit_id=?, provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, allocable=?, non_allocable_cents=?, non_allocable_reason=?, co2_cents=?, energy_kwh=? WHERE id=?`)
+    .run(unitId, String(b.provider ?? inv.provider).slice(0, 120), category, String(b.description ?? inv.description ?? "").slice(0, 200),
       amount, String(b.period_start ?? inv.period_start), String(b.period_end ?? inv.period_end),
       key, b.allocable === undefined ? inv.allocable : (b.allocable ? 1 : 0), nonAlloc,
       b.non_allocable_reason === undefined ? inv.non_allocable_reason : (b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null),
@@ -522,6 +536,19 @@ function buildTenantStatement(sid: number) {
   const tenant = q.tenant(s.tenant_id)!, unit = q.unit(tenant.unit_id)!, property = q.property(unit.property_id)!;
   return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), balance_cents: s.balance_cents, suggested_prepayment_cents: s.suggested_prepayment_cents } };
 }
+
+// Manual payment tracking: the landlord records that the tenant paid or that the refund was transferred.
+app.patch("/api/statements/:id/payment", (req, res) => {
+  const st = q.statement(num(req.params.id));
+  if (!st) return res.status(404).end();
+  const b = req.body ?? {};
+  const status = ["open", "paid", "refunded", "waived"].includes(b.status) ? b.status : st.payment_status;
+  const paidAt = status === "open" ? null : (isoOrNull(b.paid_at) ?? st.paid_at ?? new Date().toISOString().slice(0, 10));
+  const paidCents = status === "open" ? null : (b.paid_cents === undefined || b.paid_cents === "" ? (st.paid_cents ?? Math.abs(st.balance_cents)) : Math.round(Number(b.paid_cents)));
+  db.prepare("UPDATE statements SET payment_status = ?, paid_at = ?, paid_cents = ?, payment_note = ? WHERE id = ?")
+    .run(status, paidAt, paidCents, "note" in b ? (b.note ? String(b.note).slice(0, 300) : null) : st.payment_note, st.id);
+  res.json(withLines(q.statement(st.id)!));
+});
 
 app.get("/api/statements/:id/pdf", async (req, res) => {
   const b = buildTenantStatement(num(req.params.id));

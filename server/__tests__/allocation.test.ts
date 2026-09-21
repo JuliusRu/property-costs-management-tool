@@ -12,7 +12,7 @@ const units: Unit[] = [
 const tenant = (id: number, unit_id: number, move_in: string | null = null, move_out: string | null = null): Tenant =>
   ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id), access_code: "TESTCODE", lease_json: "{}", password_hash: null, registered_at: null });
 const inv = (id: number, amount_cents: number, allocation_key: Invoice["allocation_key"], extra: Partial<Invoice> = {}): Invoice =>
-  ({ id, property_id: 1, provider: "P", category: "other", description: null, amount_cents, period_start: "2025-01-01", period_end: "2025-12-31",
+  ({ id, property_id: 1, unit_id: null, provider: "P", category: "other", description: null, amount_cents, period_start: "2025-01-01", period_end: "2025-12-31",
     allocation_key, allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, co2_cents: 0, energy_kwh: 0, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
 
 test("largest-remainder split always sums to the total", () => {
@@ -192,4 +192,13 @@ test("flat rate (Pauschale) tenants get no statement; unconfirmed AI lease rules
   assert.equal(summary.owner_lease_diff_cents, 25429);
   assert.equal(summary.tenants_cents + summary.owner_lease_diff_cents, 98400);
   assert.ok(checks.some((c) => c.code === "LEASE_UNCONFIRMED" && c.level === "BLOCKER"));
+});
+
+test("invoice addressed to one unit goes 100 % to that unit, day-exact", () => {
+  const all = [tenant(1, 1), tenant(2, 2), tenant(3, 3, "2025-09-01")];
+  const { statements, summary } = computeStatements(units, all, [inv(1, 12000, "area", { unit_id: 3, category: "other" })], 2025);
+  assert.equal(statements[0].total_cents, 0);
+  assert.equal(statements[1].total_cents, 0);
+  assert.equal(statements[2].total_cents + summary.owner_vacancy_cents, 12000);
+  assert.match(statements[2].lines[0].formula, /directly for C/);
 });

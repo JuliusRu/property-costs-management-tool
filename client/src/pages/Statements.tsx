@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type Check, type Property, type Run, type Statement } from "../api";
-import { Badge, BigMoney, Button, Card, Empty, inputCls, Money, Notice, PageTitle, Spinner } from "../ui";
+import { api, type Check, type PaymentStatus, type Property, type Run, type Statement } from "../api";
+import { Badge, BigMoney, Button, Card, Empty, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
 
 const YEAR = new Date().getFullYear() - 1;
@@ -125,6 +125,7 @@ function StatementCard({ s, property, blocked, onChange }: { s: Statement; prope
         </div>
       </div>
       {err && <div className="px-6 pb-3 text-xs text-ember">{err}</div>}
+      {s.balance_cents !== 0 && <div className="flex items-center gap-3 border-t border-line px-6 py-2 text-xs"><span className="text-mute">{t("s.th.payment")}</span><PaymentControl sid={s.id} balance={s.balance_cents} status={s.payment_status} paidAt={s.paid_at} note={s.payment_note} onChange={onChange} /></div>}
       {s.suggested_prepayment_cents > 0 && Math.abs(s.suggested_prepayment_cents - tenant.monthly_prepayment_cents) >= 500 && (
         <div className="num border-t border-line px-6 py-2 text-xs text-ink-soft">{t("s.suggest")}: <b><Money cents={s.suggested_prepayment_cents} /></b> <span className="text-mute">(<Money cents={tenant.monthly_prepayment_cents} /> {t("s.prepaid")})</span></div>
       )}
@@ -144,5 +145,33 @@ function StatementCard({ s, property, blocked, onChange }: { s: Statement; prope
         </table>
       )}
     </Card>
+  );
+}
+
+/** Manual payment tracking: open → tenant paid / refund transferred. One control, used on Statements and Tenants. */
+export function PaymentControl({ sid, balance, status, paidAt, note, onChange, compact }: { sid: number; balance: number; status: PaymentStatus; paidAt: string | null; note?: string | null; onChange: () => void; compact?: boolean }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ paid_at: new Date().toISOString().slice(0, 10), amount: (Math.abs(balance) / 100).toFixed(2), note: note ?? "" });
+  const target: PaymentStatus = balance > 0 ? "paid" : "refunded";
+  const tone = status === "open" ? "amber" : status === "waived" ? "slate" : "green";
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Badge tone={tone}>{t(`pay.${status}`)}{paidAt && status !== "open" ? ` · ${t("pay.on", { d: paidAt })}` : ""}</Badge>
+      {status === "open"
+        ? <Button size="sm" variant={compact ? "ghost" : "primary"} onClick={() => setOpen(true)}>{balance > 0 ? t("pay.mark.paid") : t("pay.mark.refunded")}</Button>
+        : <Button size="sm" variant="ghost" onClick={async () => { await api.setPayment(sid, { status: "open" }); onChange(); }}>{t("pay.reopen")}</Button>}
+      {open && (
+        <Modal title={t("pay.title")} onClose={() => setOpen(false)}>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={t("pay.date")}><input className={inputCls} type="date" value={f.paid_at} onChange={(e) => setF({ ...f, paid_at: e.target.value })} /></Field>
+            <Field label={t("pay.amount")}><input className={inputCls + " num"} type="number" step="0.01" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></Field>
+            <div className="col-span-2"><Field label={t("pay.note")}><input className={inputCls} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder={t("pay.note.ph")} /></Field></div>
+          </div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
+            <Button onClick={async () => { await api.setPayment(sid, { status: target, paid_at: f.paid_at, paid_cents: Math.round(Number(f.amount) * 100), note: f.note }); setOpen(false); onChange(); }}>{t("pay.save")}</Button></div>
+        </Modal>
+      )}
+    </span>
   );
 }

@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS tenants (
 CREATE TABLE IF NOT EXISTS invoices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+  unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL,
   provider TEXT NOT NULL,
   category TEXT NOT NULL,
   description TEXT,
@@ -161,6 +162,10 @@ CREATE TABLE IF NOT EXISTS statements (
   prepaid_cents INTEGER NOT NULL,
   balance_cents INTEGER NOT NULL,
   suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0,
+  payment_status TEXT NOT NULL DEFAULT 'open',
+  paid_at TEXT,
+  paid_cents INTEGER,
+  payment_note TEXT,
   lines_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   sent_at TEXT,
@@ -179,7 +184,12 @@ for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE 
   "ALTER TABLE statements ADD COLUMN suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE tenants ADD COLUMN lease_json TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE tenants ADD COLUMN password_hash TEXT",
-  "ALTER TABLE tenants ADD COLUMN registered_at TEXT"]) {
+  "ALTER TABLE tenants ADD COLUMN registered_at TEXT",
+  "ALTER TABLE invoices ADD COLUMN unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL",
+  "ALTER TABLE statements ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'open'",
+  "ALTER TABLE statements ADD COLUMN paid_at TEXT",
+  "ALTER TABLE statements ADD COLUMN paid_cents INTEGER",
+  "ALTER TABLE statements ADD COLUMN payment_note TEXT"]) {
   try { db.exec(stmt); } catch { /* column exists */ }
 }
 
@@ -220,7 +230,7 @@ export function leaseOf(t: Tenant): LeaseRules {
   try { return { ...DEFAULT_LEASE, ...JSON.parse(t.lease_json || "{}") }; } catch { return { ...DEFAULT_LEASE }; }
 }
 export type Invoice = {
-  id: number; property_id: number; provider: string; category: Category;
+  id: number; property_id: number; unit_id: number | null; provider: string; category: Category;
   description: string | null; amount_cents: number; period_start: string;
   period_end: string; allocation_key: AllocationKey; allocable: number;
   non_allocable_cents: number; non_allocable_reason: string | null;
@@ -230,7 +240,8 @@ export type Invoice = {
 };
 export type Statement = {
   id: number; tenant_id: number; year: number; total_cents: number;
-  prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number; lines_json: string;
+  prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number;
+  payment_status: "open" | "paid" | "refunded" | "waived"; paid_at: string | null; paid_cents: number | null; payment_note: string | null; lines_json: string;
   created_at: string; sent_at: string | null;
 };
 
@@ -253,6 +264,7 @@ export const q = {
   property: (id: number) => db.prepare("SELECT * FROM properties WHERE id = ?").get(id) as unknown as Property | undefined,
   units: (propertyId: number) => db.prepare("SELECT * FROM units WHERE property_id = ? ORDER BY id").all(propertyId) as unknown as Unit[],
   unit: (id: number) => db.prepare("SELECT * FROM units WHERE id = ?").get(id) as unknown as Unit | undefined,
+  allTenants: () => db.prepare("SELECT t.*, u.label AS unit_label, u.property_id, p.name AS property_name FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id ORDER BY p.name, u.id, t.move_in").all() as unknown as (Tenant & { unit_label: string; property_id: number; property_name: string })[],
   tenants: (propertyId: number) =>
     db.prepare("SELECT t.* FROM tenants t JOIN units u ON u.id = t.unit_id WHERE u.property_id = ? ORDER BY t.id").all(propertyId) as unknown as Tenant[],
   tenant: (id: number) => db.prepare("SELECT * FROM tenants WHERE id = ?").get(id) as unknown as Tenant | undefined,

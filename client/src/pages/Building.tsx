@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useRef } from "react";
-import { api, CATEGORIES, HEATING_TYPES, KEYS, type Invoice, type Lease, type LeaseExtraction, type Property, type Settings, type Tenant, type Unit, type UnitType } from "../api";
+import { api, CATEGORIES, HEATING_TYPES, KEYS, type Invoice, type Lease, type LeaseExtraction, type Property, type Settings, type Tenant, type TenantRow, type Unit, type UnitType } from "../api";
 import { Badge, Button, Card, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
 
@@ -32,39 +32,43 @@ export default function Building({ property, onChange }: { property: Property; o
         <Stat label={t("b.heat")} value={<span className="text-base">{(t(`set.heating.${property.settings.heating_type}` as Key).split(" — ")[1] ?? "").split(" (")[0]}</span>} sub={property.settings.heating_type === "decentral" ? "—" : property.settings.heizkv_exempt ? "§ 11 HeizkostenV" : `${Math.round(property.settings.consumption_share * 100)} % kWh / ${100 - Math.round(property.settings.consumption_share * 100)} % m²`} />
       </div>
 
-      <Card>
+      <Card className="overflow-x-auto">
         <div className="flex items-center justify-between border-b border-line px-5 py-3">
-          <div className="font-semibold">{t("b.occupancy", { y: YEAR })}</div>
+          <div className="font-semibold">{t("b.occupancy", { y: YEAR })} <span className="font-normal text-mute">· {t("b.occupied", { n: property.units.filter((u) => property.tenants.some((x) => x.unit_id === u.id)).length, m: property.units.length })}</span></div>
           <div className="flex items-center gap-4 text-xs text-mute"><span className="inline-flex items-center gap-1.5"><i className="inline-block h-2.5 w-4 rounded-sm bg-cobalt" />{t("b.legend.tenant")}</span><span className="inline-flex items-center gap-1.5"><i className="inline-block h-2.5 w-4 rounded-sm bg-sun" />{t("b.legend.vacant")}</span></div>
         </div>
         {property.units.length === 0 && <div className="px-5 py-12 text-center text-sm text-mute">{t("b.noUnits")}</div>}
-        <div className="divide-y divide-line">
-          {property.units.map((u) => {
-            const tenants = property.tenants.filter((x) => x.unit_id === u.id);
-            return (
-              <div key={u.id} className="grid grid-cols-12 items-center gap-4 px-5 py-4">
-                <div className="col-span-3">
-                  <button className="text-left font-semibold hover:text-cobalt" onClick={() => setEditUnit(u)}>{u.label}</button> {u.unit_type !== "residential" && <Badge>{t(`unit.${u.unit_type}` as Key)}</Badge>}
-                  <div className="text-xs text-mute">{u.area_sqm} m² · {u.persons} {u.persons === 1 ? t("common.person") : t("common.persons")} · {u.heating_kwh.toLocaleString("de-DE")} kWh · {u.water_m3} m³</div>
-                </div>
-                <div className="col-span-4">
-                  {tenants.length === 0 && <span className="text-sm text-mute">{t("b.vacantAll")}</span>}
-                  {tenants.map((x) => (
-                    <div key={x.id} className="text-sm">
-                      <button className="font-medium hover:text-cobalt" onClick={() => setEditTenant(x)}>{x.name}</button>
-                      <span className="text-mute"> · <Money cents={x.monthly_prepayment_cents} />/{t("common.month")}</span>
-                      {(x.move_in && x.move_in > `${YEAR}-01-01`) && <> <Badge tone="blue">{t("b.in", { d: x.move_in })}</Badge></>}
-                      {(x.move_out && x.move_out < `${YEAR}-12-31`) && <> <Badge tone="amber">{t("b.out", { d: x.move_out })}</Badge></>}
-                      {hasRules(x.lease) && <> <Badge tone={x.lease.confirmed ? "green" : "red"}>{x.lease.confirmed ? t("lease.confirmed") : t("lease.unconfirmed")}</Badge></>}
-                    </div>
-                  ))}
-                  <button className="mt-1 text-xs font-semibold text-cobalt hover:underline" onClick={() => setEditTenant({ unit_id: u.id })}>{t("b.addTenant")}</button>
-                </div>
-                <div className="col-span-5"><OccupancyBar tenants={tenants} year={YEAR} /></div>
-              </div>
-            );
-          })}
-        </div>
+        {property.units.length > 0 && (
+          <table className="w-full min-w-[900px] text-sm">
+            <thead className="text-left text-xs text-mute"><tr>
+              <th className="px-5 py-2.5 font-medium">{t("b.th.unit")}</th><th className="px-5 py-2.5 font-medium">{t("b.th.tenant")}</th><th className="px-5 py-2.5 font-medium">{t("b.th.period")}</th>
+              <th className="px-5 py-2.5 text-right font-medium">{t("b.th.prepay")}</th><th className="px-5 py-2.5 font-medium">{t("b.th.occupancy", { y: YEAR })}</th><th /></tr></thead>
+            <tbody className="divide-y divide-line">
+              {property.units.map((u) => {
+                const tenants = property.tenants.filter((x) => x.unit_id === u.id);
+                const rows = tenants.length ? tenants : [null];
+                return rows.map((x, i) => (
+                  <tr key={`${u.id}-${x?.id ?? "v"}`} className={!x ? "bg-sun-soft/40" : ""}>
+                    {i === 0 && <td className="px-5 py-3 align-top" rowSpan={rows.length}>
+                      <button className="text-left font-semibold hover:text-cobalt" onClick={() => setEditUnit(u)}>{u.label}</button> {u.unit_type !== "residential" && <Badge>{t(`unit.${u.unit_type}` as Key)}</Badge>}
+                      <div className="text-xs text-mute">{u.area_sqm} m² · {u.persons} {u.persons === 1 ? t("common.person") : t("common.persons")}</div>
+                      <div className="text-xs text-mute">{u.heating_kwh.toLocaleString("de-DE")} kWh · {u.water_m3} m³</div>
+                    </td>}
+                    <td className="px-5 py-3 align-top">
+                      {x ? <><button className="font-medium hover:text-cobalt" onClick={() => setEditTenant(x)}>{x.name}</button><div className="text-xs text-mute">{x.email}</div>
+                        <div className="mt-1 flex flex-wrap gap-1">{hasRules(x.lease) && <Badge tone={x.lease.confirmed ? "green" : "red"}>{x.lease.confirmed ? t("lease.confirmed") : t("lease.unconfirmed")}</Badge>}<Badge tone={x.registered ? "green" : "slate"}>{x.registered ? t("b.tenant.registered") : t("b.tenant.notRegistered")}</Badge></div></>
+                        : <Badge tone="amber">{t("b.vacant")}</Badge>}
+                    </td>
+                    <td className="num px-5 py-3 align-top text-xs text-mute">{x ? <>{x.move_in ? t("tn.since", { d: x.move_in }) : "—"}{x.move_out && <div>{t("tn.until", { d: x.move_out })}</div>}</> : "—"}</td>
+                    <td className="num px-5 py-3 text-right align-top">{x ? <><Money cents={x.monthly_prepayment_cents} /><span className="text-xs text-mute">/{t("common.month")}</span></> : "—"}</td>
+                    <td className="px-5 py-3 align-top"><OccupancyBar tenants={x ? [x] : []} year={YEAR} /></td>
+                    <td className="px-3 py-3 text-right align-top whitespace-nowrap">{i === 0 && <Button size="sm" variant="ghost" onClick={() => setEditTenant({ unit_id: u.id })}>{t("b.addTenant")}</Button>}</td>
+                  </tr>
+                ));
+              })}
+            </tbody>
+          </table>
+        )}
       </Card>
 
       <div className="mt-8 grid gap-4 md:grid-cols-2">
@@ -190,9 +194,19 @@ function TenantModal({ tenant, onClose, onSaved }: { tenant: Partial<Tenant> & {
   const [busy, setBusy] = useState(false);
   const [code, setCode] = useState(tenant.access_code ?? "");
   const [registered, setRegistered] = useState(!!tenant.registered);
+  const [existing, setExisting] = useState<TenantRow[]>([]);
+  useEffect(() => { if (!tenant.id) api.tenantsAll().then(setExisting).catch(() => {}); }, [tenant.id]);
   const body = () => ({ name: f.name, email: f.email, monthly_prepayment_cents: Math.round(f.prepay * 100), move_in: f.move_in || null, move_out: f.move_out || null });
   return (
     <Modal title={tenant.id ? tenant.name! : t("b.tenant.new")} sub={t("b.tenant.sub")} onClose={onClose} wide={!!tenant.id}>
+      {!tenant.id && existing.length > 0 && (
+        <div className="mb-4"><Field label={t("b.tenant.existing")} hint={t("b.tenant.existing.hint")}>
+          <select className={inputCls} defaultValue="" onChange={(e) => { const r = existing.find((x) => String(x.id) === e.target.value); if (r) setF({ ...f, name: r.name, email: r.email, prepay: r.monthly_prepayment_cents / 100 }); }}>
+            <option value="">{t("b.tenant.existing.none")}</option>
+            {existing.map((r) => <option key={r.id} value={r.id}>{r.name} — {r.property_name}, {r.unit_label}</option>)}
+          </select>
+        </Field></div>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <Field label={t("b.tenant.name")}><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
         <Field label={t("b.tenant.email")}><input className={inputCls} type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>

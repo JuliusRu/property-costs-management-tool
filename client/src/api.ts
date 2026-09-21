@@ -8,7 +8,7 @@ export type LeaseExtraction = Lease & { tenant_name: string; unit_hint: string; 
 export type Tenant = { id: number; unit_id: number; name: string; email: string; monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string; registered: boolean; lease: Lease };
 export type Property = { id: number; name: string; address: string; country: string; settings: Settings; units: Unit[]; tenants: Tenant[] };
 export type Invoice = {
-  id: number; property_id: number; provider: string; category: string; description: string | null; amount_cents: number;
+  id: number; property_id: number; unit_id: number | null; provider: string; category: string; description: string | null; amount_cents: number;
   period_start: string; period_end: string; allocation_key: string; allocable: number; non_allocable_cents: number; non_allocable_reason: string | null; co2_cents: number; energy_kwh: number; source: string; file_name: string | null;
   ai_confidence: number | null; ai_notes: string | null; created_at: string;
 };
@@ -16,7 +16,9 @@ export type Line = { invoice_id: number; provider: string; category: string; des
 export type Summary = { year: number; invoiced_cents: number; non_allocable_cents: number; allocable_cents: number; tenants_cents: number; owner_vacancy_cents: number; rounding_cents: number; co2_landlord_cents: number; owner_lease_diff_cents: number; legal_basis: string };
 export type Check = { level: "BLOCKER" | "WARNING" | "INFO"; code: string; message: string; hint?: string };
 export type Run = { statements: Statement[]; summary: Summary | null; checks: Check[]; created_at: string | null };
-export type Statement = { id: number; tenant_id: number; year: number; total_cents: number; prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number; lines: Line[]; created_at: string; sent_at: string | null };
+export type PaymentStatus = "open" | "paid" | "refunded" | "waived";
+export type Statement = { id: number; tenant_id: number; year: number; total_cents: number; prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number; payment_status: PaymentStatus; paid_at: string | null; paid_cents: number | null; payment_note: string | null; lines: Line[]; created_at: string; sent_at: string | null };
+export type TenantRow = Tenant & { unit_label: string; property_id: number; property_name: string; lease_rules: boolean; latest: { id: number; year: number; balance_cents: number; sent_at: string | null; payment_status: PaymentStatus; paid_at: string | null } | null };
 export type Extraction = { provider: string; category: string; description: string; amount_cents: number; period_start: string; period_end: string; allocation_key: string; allocable: boolean; non_allocable_cents: number; non_allocable_reason: string; co2_cents: number; energy_kwh: number; meter_note?: string; confidence: number; notes: string };
 
 export class ApiError extends Error { status: number; constructor(status: number, msg: string) { super(msg); this.status = status; } }
@@ -50,6 +52,8 @@ export const api = {
   extract: (pid: number, file: File) => { const fd = new FormData(); fd.append("file", file); return req<{ positions: Extraction[]; notes: string; extraction: Extraction; file_name: string }>(`/api/properties/${pid}/invoices/extract`, { method: "POST", body: fd }); },
   sync: (pid: number) => req<{ imported: Invoice[]; errors: string[] }>(`/api/properties/${pid}/invoices/sync`, { method: "POST" }),
   statements: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements?year=${year}`),
+  tenantsAll: () => req<TenantRow[]>("/api/tenants"),
+  setPayment: (sid: number, body: { status: PaymentStatus; paid_at?: string; paid_cents?: number; note?: string }) => req<Statement>(`/api/statements/${sid}/payment`, { ...json(body), method: "PATCH" }),
   generate: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements/generate`, json({ year })),
   reset: () => req<{ ok: true }>("/api/reset", { method: "POST" }),
   waitlist: (email: string, units: number | null) => req<{ ok: true }>("/api/waitlist", json({ email, units })),
