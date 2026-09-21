@@ -19,6 +19,11 @@ and send a document the tenant can verify. Most do it in Excel — and roughly e
 5. **One click sends everything.** Each tenant receives a German PDF statement by e-mail plus a personal portal link
    where they can check every line against the source document.
 
+## Demo access (MAIN × SpaceX AI Hackathon, 21 Sept 2026)
+
+Live: **https://invoice.properties** — landlord login `jury@main.nl` / `Basics`. Two demo buildings; from any statement, "Portal" opens the tenant's view.
+Market research (segments, competitors, willingness to pay): see `Market Research.pdf` in this repository.
+
 ## Run it locally
 
 Requires Node ≥ 23.4 (uses the built-in `node:sqlite`).

@@ -19,8 +19,8 @@ Germany has ~3.9 million private landlords with 1–20 units. Once a year each h
 
 ## Demo / project link
 - Live app: https://invoice.properties
-  - Landlord login: **jury@main.nl / Basics**  ← set LANDLORD_EMAIL=jury@main.nl, LANDLORD_PASSWORD=Basics, DEMO_MODE=1 in Coolify, then Restart
-  - Tenant login: lena.hoffmann@example.com / demo1234 · registration flow: oeztuerk@example.com / code OEZT2025
+  - Landlord login: **jury@main.nl / Basics** (built into the server; verified live 21.09. 17:50)
+  - Tenant view: "Portal" button on any statement (or lena.hoffmann@example.com / demo1234)
   - Two demo buildings: "Lindenstraße 12" (vacancy, lease scan, CO₂) and "Musterweg 7" (5 units incl. restaurant, MEA shares, waste for apartments only, water metered per unit, credit note)
 - Code: https://github.com/JuliusRu/property-costs-management-tool  ← set to Public before submitting
 - Video: "Streamlining German Nebenkosten Reconciliation for Landlords.mp4" (14.6 MB) — upload in the form, or host on YouTube (unlisted) / Google Drive and paste the link
@@ -40,6 +40,7 @@ Germany has ~3.9 million private landlords with 1–20 units. Once a year each h
 
 ## Before you press submit
 - [x] Repo is Public (history checked: no secrets, .env never committed, real documents untracked)
-- [ ] Coolify: `LANDLORD_EMAIL=jury@main.nl`, `LANDLORD_PASSWORD=Basics`, `DEMO_MODE=1`, `APP_URL=https://invoice.properties`, then Restart
+- [x] Jury login works live (no Coolify variables needed). Optional: `DEMO_MODE=1` prefills the login form.
+- [ ] Add `Market Research.pdf` to the repo root (README links to that name)
 - [ ] Upload the video (or paste a YouTube/Drive link)
 - [x] Screenshots in `submission/` (01 landing … 12 statement PDF)
