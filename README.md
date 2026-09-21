@@ -52,6 +52,15 @@ samples/  synthetic provider invoices for the simulated inbox sync
 
 Deploy: one container (`Dockerfile`), mount `/app/data` and `/app/uploads` as volumes. Runs on Coolify.
 
+### Live (since 2026-09-21)
+
+- **https://invoice.properties** — Coolify app `p8kc0ww4kkk00o4cgcgo4ooc` on the Oracle VPS (92.5.112.7), Let's Encrypt via Traefik.
+- **Every push to `main` deploys automatically** (GitHub webhook → Coolify → Docker build, ~2–3 min). No manual step.
+- DNS: Cloudflare zone `invoice.properties`, A record DNS-only (grey cloud — Traefik does the ACME challenge itself). Registrar: Spaceship.
+- Env vars live only in Coolify (`LANDLORD_PASSWORD`, `SESSION_SECRET`, `APP_URL`, …). `OPENROUTER_API_KEY` and `BREVO_API_KEY` are still empty there — AI extraction and mail do not work live until they are set.
+- Data (`/app/data/app.db`, `/app/uploads`) sits in Docker volumes and survives redeploys; the demo seed ran once on first start.
+- Logins for the hackathon demo are in `~/.secrets/invoice-properties.txt` (not in the repo).
+
 ## German rules covered (rules version: DE 2025-01)
 
 | Rule | Where |
