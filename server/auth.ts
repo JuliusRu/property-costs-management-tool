@@ -35,12 +35,20 @@ export function safeEqual(a: string, b: string): boolean {
   return ba.length === bb.length && timingSafeEqual(ba, bb);
 }
 
-// Landlord account = LANDLORD_EMAIL + LANDLORD_PASSWORD from the environment (single-tenant demo; multi-account comes with Supabase).
+// Landlord accounts (single-tenant demo; multi-account comes with Supabase):
+//  1. LANDLORD_EMAIL + LANDLORD_PASSWORD from the environment
+//  2. the jury account for the hackathon — JURY_EMAIL / JURY_PASSWORD, defaults jury@main.nl / Basics.
+//     Disable it after the event with JURY_PASSWORD="" (it is public by design: it is printed in the submission).
+export function landlordAccounts(): { email: string; password: string }[] {
+  const list: { email: string; password: string }[] = [];
+  if (process.env.LANDLORD_EMAIL && process.env.LANDLORD_PASSWORD) list.push({ email: process.env.LANDLORD_EMAIL, password: process.env.LANDLORD_PASSWORD });
+  const juryPw = process.env.JURY_PASSWORD ?? "Basics";
+  if (juryPw) list.push({ email: process.env.JURY_EMAIL ?? "jury@main.nl", password: juryPw });
+  return list;
+}
 export function checkLandlord(email: string, password: string): boolean {
-  const expectedMail = (process.env.LANDLORD_EMAIL ?? "").trim().toLowerCase();
-  const expectedPw = process.env.LANDLORD_PASSWORD ?? "";
-  if (!expectedMail || !expectedPw) return false;
-  return safeEqual(email.trim().toLowerCase(), expectedMail) && safeEqual(password, expectedPw);
+  const e = email.trim().toLowerCase();
+  return landlordAccounts().some((a) => safeEqual(e, a.email.trim().toLowerCase()) && safeEqual(password, a.password));
 }
 
 export function readCookie(req: Request, name: string): string | undefined {

@@ -9,7 +9,7 @@ import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, DOC_KINDS, newAccessCode
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
 import { extractInvoice, extractInvoices, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
-import { checkLandlord, makeSession, requireLandlord, safeEqual, tenantIdFromSession, hashPassword, verifyPassword } from "./auth.js";
+import { checkLandlord, landlordAccounts, makeSession, requireLandlord, safeEqual, tenantIdFromSession, hashPassword, verifyPassword } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
 
@@ -51,7 +51,8 @@ app.post("/api/logout", (_req, res) => {
 app.get("/api/public-config", (_req, res) => {
   const demo = process.env.DEMO_MODE === "1" || process.env.NODE_ENV !== "production";
   // In demo mode the login form is prefilled — the credentials are public by design (jury access).
-  res.json({ demo, prefill: demo ? { landlord_email: process.env.LANDLORD_EMAIL ?? "", landlord_password: process.env.LANDLORD_PASSWORD ?? "" } : null });
+  const jury = landlordAccounts().find((a) => a.email === (process.env.JURY_EMAIL ?? "jury@main.nl")) ?? landlordAccounts()[0];
+  res.json({ demo, prefill: demo && jury ? { landlord_email: jury.email, landlord_password: jury.password } : null });
 });
 
 // ---------- tenant auth ----------

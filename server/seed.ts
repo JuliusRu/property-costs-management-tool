@@ -13,6 +13,11 @@ export function seedIfEmpty() {
     // Demo databases created before the Munich building existed: add it once, without touching anything else.
     const has = (name: string) => !!db.prepare("SELECT 1 FROM properties WHERE name = ?").get(name);
     if (has("Lindenstraße 12") && !has("Musterweg 7")) seedMunich();
+    // Demo tenant login: Lena got her password only in later seeds — set it once on older demo databases.
+    const lena = db.prepare("SELECT id, password_hash FROM tenants WHERE email = 'lena.hoffmann@example.com'").get() as { id: number; password_hash: string | null } | undefined;
+    if (lena && !lena.password_hash) db.prepare("UPDATE tenants SET password_hash = ?, registered_at = datetime('now'), access_code = 'LENA2025' WHERE id = ?").run(hashPassword("demo1234"), lena.id);
+    const oez = db.prepare("SELECT id FROM tenants WHERE email = 'oeztuerk@example.com' AND registered_at IS NULL").get() as { id: number } | undefined;
+    if (oez) db.prepare("UPDATE tenants SET access_code = 'OEZT2025' WHERE id = ?").run(oez.id);
     return;
   }
 
