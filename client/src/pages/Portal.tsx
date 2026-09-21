@@ -35,13 +35,13 @@ export default function Portal() {
             </div>
           </div>
           <table className="w-full text-sm">
-            <thead className="text-left text-xs text-slate-500"><tr><th className="px-6 py-2">Cost</th><th className="px-6 py-2">How it's split</th><th className="px-6 py-2 text-right">Building</th><th className="px-6 py-2 text-right">Your share</th></tr></thead>
+            <thead className="text-left text-xs text-slate-500"><tr><th className="px-6 py-2">Cost</th><th className="px-6 py-2">How your share is calculated</th><th className="px-6 py-2 text-right">Building</th><th className="px-6 py-2 text-right">Your share</th></tr></thead>
             <tbody>
               {s.lines.map((l, i) => (
                 <tr key={i} className="border-t border-slate-50">
                   <td className="px-6 py-2">{CATEGORY_LABEL[l.category] ?? l.category}
                     <div className="text-xs text-slate-500">{l.provider} · <a className="underline" href={`/api/portal/${token}/invoice/${l.invoice_id}/file`} target="_blank" rel="noreferrer">original invoice</a></div></td>
-                  <td className="px-6 py-2 text-slate-600">{KEY_LABEL[l.allocation_key]}<div className="text-xs text-slate-500">{l.basis_unit} of {l.basis_total}</div></td>
+                  <td className="px-6 py-2 text-slate-600">{KEY_LABEL[l.allocation_key]}<div className="font-mono text-xs text-slate-500">{l.formula}</div></td>
                   <td className="px-6 py-2 text-right"><Money cents={l.total_cents} /></td>
                   <td className="px-6 py-2 text-right font-medium"><Money cents={l.share_cents} /></td>
                 </tr>
@@ -55,7 +55,7 @@ export default function Portal() {
           </table>
         </Card>
       ))}
-      <p className="text-center text-xs text-slate-400">Statements follow § 556 BGB / BetrKV. Objections within 12 months of receipt.</p>
+      <p className="text-center text-xs text-slate-400">Computed under § 556 BGB / BetrKV with deterministic rules; vacancy periods are charged to the owner, never to you. Objections within 12 months of receipt.</p>
     </div>
   );
 }

@@ -26,6 +26,7 @@ function Shell({ property, reload }: { property: Property; reload: () => void })
         </nav>
         <div className="mt-auto space-y-3 px-2 text-xs text-slate-500">
           <div><div className="font-medium text-slate-700">{property.name}</div>{property.address}</div>
+          <Button variant="ghost" className="w-full justify-center" onClick={async () => { if (confirm("Reset all demo data?")) { await api.reset(); reload(); nav("/"); } }}>Reset demo data</Button>
           <Button variant="ghost" className="w-full justify-center" onClick={async () => { await api.logout(); nav("/login"); }}>Log out</Button>
         </div>
       </aside>

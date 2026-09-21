@@ -34,7 +34,7 @@ export default function Dashboard({ property }: { property: Property }) {
               return (
                 <tr key={u.id} className="border-t border-slate-100">
                   <td className="px-5 py-3 font-medium">{u.label}</td>
-                  <td className="px-5 py-3">{t ? <>{t.name}<div className="text-xs text-slate-500">{t.email}</div></> : <Badge tone="amber">vacant</Badge>}</td>
+                  <td className="px-5 py-3">{t ? <>{t.name}<div className="text-xs text-slate-500">{t.email}{t.move_in && t.move_in > `${year}-01-01` && <> · <Badge tone="amber">moved in {t.move_in}</Badge></>}</div></> : <Badge tone="amber">vacant</Badge>}</td>
                   <td className="px-5 py-3">{u.area_sqm} m²</td>
                   <td className="px-5 py-3">{u.persons}</td>
                   <td className="px-5 py-3">{u.heating_kwh.toLocaleString("de-DE")} kWh</td>

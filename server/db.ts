@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   name TEXT NOT NULL,
   email TEXT NOT NULL,
   monthly_prepayment_cents INTEGER NOT NULL DEFAULT 0,
+  move_in TEXT,
+  move_out TEXT,
   portal_token TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS invoices (
@@ -88,6 +90,14 @@ CREATE TABLE IF NOT EXISTS invoices (
   ai_notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS runs (
+  property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  summary_json TEXT NOT NULL,
+  checks_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (property_id, year)
+);
 CREATE TABLE IF NOT EXISTS statements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -102,6 +112,11 @@ CREATE TABLE IF NOT EXISTS statements (
 );
 `);
 
+// tiny forward-only migrations for databases created before a column existed
+for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE tenants ADD COLUMN move_out TEXT"]) {
+  try { db.exec(stmt); } catch { /* column exists */ }
+}
+
 export type Property = { id: number; name: string; address: string; country: string };
 export type Unit = {
   id: number; property_id: number; label: string; area_sqm: number;
@@ -109,7 +124,7 @@ export type Unit = {
 };
 export type Tenant = {
   id: number; unit_id: number; name: string; email: string;
-  monthly_prepayment_cents: number; portal_token: string;
+  monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string;
 };
 export type Invoice = {
   id: number; property_id: number; provider: string; category: Category;
@@ -141,6 +156,7 @@ export const q = {
   statements: (propertyId: number, year: number) =>
     db.prepare("SELECT s.* FROM statements s JOIN tenants t ON t.id = s.tenant_id JOIN units u ON u.id = t.unit_id WHERE u.property_id = ? AND s.year = ? ORDER BY u.id").all(propertyId, year) as unknown as Statement[],
   statement: (id: number) => db.prepare("SELECT * FROM statements WHERE id = ?").get(id) as unknown as Statement | undefined,
+  run: (propertyId: number, year: number) => db.prepare("SELECT * FROM runs WHERE property_id = ? AND year = ?").get(propertyId, year) as unknown as { summary_json: string; checks_json: string; created_at: string } | undefined,
   statementsForTenant: (tenantId: number) =>
     db.prepare("SELECT * FROM statements WHERE tenant_id = ? ORDER BY year DESC").all(tenantId) as unknown as Statement[],
 };

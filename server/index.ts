@@ -5,8 +5,8 @@ import path from "node:path";
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { db, q, CATEGORIES, DEFAULT_KEY, type Category, type AllocationKey } from "./db.js";
-import { seedIfEmpty } from "./seed.js";
-import { computeStatements } from "./allocation.js";
+import { seedIfEmpty, resetAndSeed } from "./seed.js";
+import { computeStatements, occupiedMonths } from "./allocation.js";
 import { extractInvoice } from "./ai.js";
 import { checkPassword, makeSession, requireLandlord } from "./auth.js";
 import { sendMail } from "./mail.js";
@@ -65,6 +65,8 @@ app.get("/api/properties", (_req, res) => {
   res.json(q.properties().map((p) => ({ ...p, units: q.units(p.id), tenants: q.tenants(p.id) })));
 });
 app.get("/api/meta", (_req, res) => res.json({ categories: CATEGORIES, default_key: DEFAULT_KEY }));
+// Demo helper: wipe everything and reseed so the flow can be shown again from scratch.
+app.post("/api/reset", (_req, res) => { resetAndSeed(); res.json({ ok: true }); });
 
 // ---------- invoices ----------
 app.get("/api/properties/:id/invoices", (req, res) => {
@@ -155,29 +157,42 @@ app.post("/api/properties/:id/invoices/sync", async (req, res) => {
 });
 
 // ---------- statements ----------
+const withLines = (s: ReturnType<typeof q.statements>[number]) => ({ ...s, lines: JSON.parse(s.lines_json), lines_json: undefined });
+const runPayload = (propertyId: number, year: number) => {
+  const run = q.run(propertyId, year);
+  return {
+    statements: q.statements(propertyId, year).map(withLines),
+    summary: run ? JSON.parse(run.summary_json) : null,
+    checks: run ? JSON.parse(run.checks_json) : [],
+    created_at: run?.created_at ?? null,
+  };
+};
+
 app.post("/api/properties/:id/statements/generate", (req, res) => {
   const propertyId = num(req.params.id);
   const year = num(req.body?.year);
   if (!Number.isFinite(year)) return res.status(400).json({ error: "year missing" });
-  const results = computeStatements(q.units(propertyId), q.tenants(propertyId), q.invoices(propertyId, year), year);
+  const { statements, summary, checks } = computeStatements(q.units(propertyId), q.tenants(propertyId), q.invoices(propertyId, year), year);
   const up = db.prepare(
     `INSERT INTO statements (tenant_id, year, total_cents, prepaid_cents, balance_cents, lines_json) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(tenant_id, year) DO UPDATE SET total_cents=excluded.total_cents, prepaid_cents=excluded.prepaid_cents,
        balance_cents=excluded.balance_cents, lines_json=excluded.lines_json, created_at=datetime('now'), sent_at=NULL`
   );
-  for (const s of results) up.run(s.tenant.id, year, s.total_cents, s.prepaid_cents, s.balance_cents, JSON.stringify(s.lines));
-  res.json(q.statements(propertyId, year).map((s) => ({ ...s, lines: JSON.parse(s.lines_json), lines_json: undefined })));
+  for (const s of statements) up.run(s.tenant.id, year, s.total_cents, s.prepaid_cents, s.balance_cents, JSON.stringify(s.lines));
+  db.prepare(`INSERT INTO runs (property_id, year, summary_json, checks_json) VALUES (?, ?, ?, ?)
+    ON CONFLICT(property_id, year) DO UPDATE SET summary_json=excluded.summary_json, checks_json=excluded.checks_json, created_at=datetime('now')`)
+    .run(propertyId, year, JSON.stringify(summary), JSON.stringify(checks));
+  res.json(runPayload(propertyId, year));
 });
 app.get("/api/properties/:id/statements", (req, res) => {
-  const year = num(req.query.year);
-  res.json(q.statements(num(req.params.id), year).map((s) => ({ ...s, lines: JSON.parse(s.lines_json), lines_json: undefined })));
+  res.json(runPayload(num(req.params.id), num(req.query.year)));
 });
 
 function buildTenantStatement(sid: number) {
   const s = q.statement(sid);
   if (!s) return null;
   const tenant = q.tenant(s.tenant_id)!, unit = q.unit(tenant.unit_id)!, property = q.property(unit.property_id)!;
-  return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, balance_cents: s.balance_cents } };
+  return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), balance_cents: s.balance_cents } };
 }
 
 app.get("/api/statements/:id/pdf", async (req, res) => {
@@ -192,6 +207,10 @@ app.get("/api/statements/:id/pdf", async (req, res) => {
 app.post("/api/statements/:id/send", async (req, res) => {
   const b = buildTenantStatement(num(req.params.id));
   if (!b) return res.status(404).end();
+  // A statement with unresolved blockers must not go out.
+  const run = q.run(b.property.id, b.s.year);
+  const blockers = run ? (JSON.parse(run.checks_json) as { level: string; message: string }[]).filter((c) => c.level === "BLOCKER") : [];
+  if (blockers.length) return res.status(409).json({ error: `Blocked: ${blockers.map((c) => c.message).join(" ")}` });
   const portalUrl = `${APP_URL()}/portal/${b.ts.tenant.portal_token}`;
   try {
     const pdf = await statementPdf(b.property, b.ts, portalUrl);
