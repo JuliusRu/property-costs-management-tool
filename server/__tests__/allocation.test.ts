@@ -10,7 +10,7 @@ const units: Unit[] = [
   { id: 3, property_id: 1, label: "C", unit_type: "residential", area_sqm: 46, persons: 1, heating_kwh: 3900, water_m3: 34 },
 ];
 const tenant = (id: number, unit_id: number, move_in: string | null = null, move_out: string | null = null): Tenant =>
-  ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id), access_code: "TESTCODE", lease_json: "{}" });
+  ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id), access_code: "TESTCODE", lease_json: "{}", password_hash: null, registered_at: null });
 const inv = (id: number, amount_cents: number, allocation_key: Invoice["allocation_key"], extra: Partial<Invoice> = {}): Invoice =>
   ({ id, property_id: 1, provider: "P", category: "other", description: null, amount_cents, period_start: "2025-01-01", period_end: "2025-12-31",
     allocation_key, allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, co2_cents: 0, energy_kwh: 0, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });

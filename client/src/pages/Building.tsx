@@ -188,6 +188,8 @@ function TenantModal({ tenant, onClose, onSaved }: { tenant: Partial<Tenant> & {
   const t = useT();
   const [f, setF] = useState({ name: tenant.name ?? "", email: tenant.email ?? "", prepay: (tenant.monthly_prepayment_cents ?? 0) / 100, move_in: tenant.move_in ?? "", move_out: tenant.move_out ?? "" });
   const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState(tenant.access_code ?? "");
+  const [registered, setRegistered] = useState(!!tenant.registered);
   const body = () => ({ name: f.name, email: f.email, monthly_prepayment_cents: Math.round(f.prepay * 100), move_in: f.move_in || null, move_out: f.move_out || null });
   return (
     <Modal title={tenant.id ? tenant.name! : t("b.tenant.new")} sub={t("b.tenant.sub")} onClose={onClose} wide={!!tenant.id}>
@@ -195,7 +197,13 @@ function TenantModal({ tenant, onClose, onSaved }: { tenant: Partial<Tenant> & {
         <Field label={t("b.tenant.name")}><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
         <Field label={t("b.tenant.email")}><input className={inputCls} type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
         <Field label={t("b.tenant.prepay")}><input className={inputCls} type="number" step="1" value={f.prepay} onChange={(e) => setF({ ...f, prepay: Number(e.target.value) })} /></Field>
-        {tenant.id ? <Field label={t("b.tenant.code")} hint={t("b.tenant.code.hint")}><div className="num rounded-lg bg-surface px-3 py-2 font-mono text-sm font-bold tracking-widest">{tenant.access_code}</div></Field> : <div />}
+        {tenant.id ? <Field label={t("b.tenant.code")} hint={t("b.tenant.code.hint")}>
+          <div className="flex items-center gap-2">
+            <div className="num flex-1 rounded-lg bg-surface px-3 py-2 font-mono text-sm font-bold tracking-widest">{code}</div>
+            <Badge tone={registered ? "green" : "amber"}>{registered ? t("b.tenant.registered") : t("b.tenant.notRegistered")}</Badge>
+            <Button size="sm" variant="ghost" onClick={async () => { if (confirm(t("b.tenant.resetAccess.confirm"))) { const r = await api.resetAccess(tenant.id!); setCode(r.access_code); setRegistered(false); } }}>{t("b.tenant.resetAccess")}</Button>
+          </div>
+        </Field> : <div />}
         <Field label={t("b.tenant.moveIn")} hint={t("b.tenant.moveIn.hint")}><input className={inputCls} type="date" value={f.move_in} onChange={(e) => setF({ ...f, move_in: e.target.value })} /></Field>
         <Field label={t("b.tenant.moveOut")} hint={t("b.tenant.moveOut.hint")}><input className={inputCls} type="date" value={f.move_out} onChange={(e) => setF({ ...f, move_out: e.target.value })} /></Field>
       </div>

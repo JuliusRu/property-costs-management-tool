@@ -98,7 +98,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   move_in TEXT,
   move_out TEXT,
   portal_token TEXT NOT NULL UNIQUE,
-  lease_json TEXT NOT NULL DEFAULT '{}'
+  lease_json TEXT NOT NULL DEFAULT '{}',
+  password_hash TEXT,
+  registered_at TEXT
 );
 CREATE TABLE IF NOT EXISTS invoices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,7 +177,9 @@ for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE 
   "ALTER TABLE invoices ADD COLUMN co2_cents INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE invoices ADD COLUMN energy_kwh REAL NOT NULL DEFAULT 0",
   "ALTER TABLE statements ADD COLUMN suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE tenants ADD COLUMN lease_json TEXT NOT NULL DEFAULT '{}'"]) {
+  "ALTER TABLE tenants ADD COLUMN lease_json TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE tenants ADD COLUMN password_hash TEXT",
+  "ALTER TABLE tenants ADD COLUMN registered_at TEXT"]) {
   try { db.exec(stmt); } catch { /* column exists */ }
 }
 
@@ -198,7 +202,7 @@ export type Unit = {
 export type Tenant = {
   id: number; unit_id: number; name: string; email: string;
   monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string;
-  lease_json: string;
+  lease_json: string; password_hash: string | null; registered_at: string | null;
 };
 
 // Rules read from (or typed in from) the lease. They rank above the building default — a lease-agreed key binds the landlord.

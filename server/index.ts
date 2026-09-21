@@ -9,7 +9,7 @@ import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, DOC_KINDS, newAccessCode
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
 import { extractInvoice, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
-import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession } from "./auth.js";
+import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession, hashPassword, verifyPassword } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
 
@@ -39,19 +39,43 @@ app.post("/api/logout", (_req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- tenant login: e-mail + access code (the code is printed on the statement and in the mail) ----------
+// Public config for the login page: demo mode prefills the forms.
+app.get("/api/public-config", (_req, res) => res.json({ demo: process.env.DEMO_MODE === "1" || process.env.NODE_ENV !== "production" }));
+
+// ---------- tenant auth ----------
+// Registration once: e-mail + access code (printed on the statement / in the mail) + chosen password.
+// Afterwards: e-mail + password. The code is single-use; the landlord can issue a new one, which resets the password.
 const loginHits = new Map<string, number[]>();
-app.post("/api/tenant-login", (req, res) => {
+function rateLimited(req: express.Request): boolean {
   const ip = req.ip ?? "?", now = Date.now();
   const hits = (loginHits.get(ip) ?? []).filter((t) => now - t < 15 * 60_000);
-  if (hits.length >= 20) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
   hits.push(now); loginHits.set(ip, hits);
+  return hits.length > 20;
+}
+function setTenantCookie(res: express.Response, id: number) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `tenant=${makeSession("tenant", String(id))}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
+}
+app.post("/api/tenant-register", (req, res) => {
+  if (rateLimited(req)) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
   const email = String(req.body?.email ?? "").trim();
   const code = String(req.body?.code ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const password = String(req.body?.password ?? "");
+  if (password.length < 8) return res.status(400).json({ error: "password too short (min. 8 characters)" });
   const match = q.tenantByEmail(email).find((t) => t.access_code && safeEqual(t.access_code, code));
   if (!match) return res.status(401).json({ error: "wrong e-mail or access code" });
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `tenant=${makeSession("tenant", String(match.id))}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
+  if (match.registered_at) return res.status(409).json({ error: "already registered — sign in with your password, or ask your landlord for a new code" });
+  db.prepare("UPDATE tenants SET password_hash = ?, registered_at = datetime('now') WHERE id = ?").run(hashPassword(password), match.id);
+  setTenantCookie(res, match.id);
+  res.json({ ok: true });
+});
+app.post("/api/tenant-login", (req, res) => {
+  if (rateLimited(req)) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
+  const email = String(req.body?.email ?? "").trim();
+  const password = String(req.body?.password ?? "");
+  const match = q.tenantByEmail(email).find((t) => verifyPassword(password, t.password_hash));
+  if (!match) return res.status(401).json({ error: "wrong e-mail or password" });
+  setTenantCookie(res, match.id);
   res.json({ ok: true });
 });
 app.post("/api/tenant-logout", (_req, res) => {
@@ -114,7 +138,7 @@ app.use("/api", requireLandlord);
 
 // ---------- properties ----------
 app.get("/api/properties", (_req, res) => {
-  res.json(q.properties().map((p) => ({ ...p, settings: settingsOf(p), settings_json: undefined, units: q.units(p.id), tenants: q.tenants(p.id).map((t) => ({ ...t, lease: leaseOf(t), lease_json: undefined })) })));
+  res.json(q.properties().map((p) => ({ ...p, settings: settingsOf(p), settings_json: undefined, units: q.units(p.id), tenants: q.tenants(p.id).map((t) => ({ ...t, lease: leaseOf(t), lease_json: undefined, password_hash: undefined, registered: !!t.registered_at })) })));
 });
 app.post("/api/properties", (req, res) => {
   const b = req.body ?? {};
@@ -195,6 +219,13 @@ app.patch("/api/tenants/:id", (req, res) => {
   res.json(q.tenant(t.id));
 });
 app.delete("/api/tenants/:id", (req, res) => { db.prepare("DELETE FROM tenants WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
+// New access code = the tenant registers again (password forgotten, phone lost). Old password stops working.
+app.post("/api/tenants/:id/reset-access", (req, res) => {
+  const t = q.tenant(num(req.params.id));
+  if (!t) return res.status(404).end();
+  db.prepare("UPDATE tenants SET access_code = ?, password_hash = NULL, registered_at = NULL WHERE id = ?").run(newAccessCode(), t.id);
+  res.json(q.tenant(t.id));
+});
 
 // ---------- lease: upload → AI proposal (not saved) → landlord confirms ----------
 async function leaseFromBuffer(buf: Buffer, originalName: string): Promise<{ extraction: LeaseExtraction; file_name: string }> {
@@ -508,7 +539,9 @@ app.post("/api/statements/:id/send", async (req, res) => {
 <p>anbei erhalten Sie Ihre Betriebskostenabrechnung für ${b.s.year}.</p>
 <p><strong>${bal > 0 ? `Nachzahlung: ${eur(bal)}` : `Guthaben: ${eur(-bal)}`}</strong></p>
 <p>Jede Position können Sie mit Originalbeleg im Mieterportal nachvollziehen:<br><a href="${portalUrl}">${portalUrl}</a><br>
-Oder melden Sie sich unter <a href="${APP_URL()}/login">${APP_URL()}/login</a> an — E-Mail: ${b.ts.tenant.email}, Zugangscode: <strong>${b.ts.tenant.access_code}</strong></p>
+${b.ts.tenant.registered_at
+  ? `Oder melden Sie sich unter <a href="${APP_URL()}/login">${APP_URL()}/login</a> mit Ihrer E-Mail und Ihrem Passwort an.</p>`
+  : `Oder registrieren Sie sich einmalig unter <a href="${APP_URL()}/login">${APP_URL()}/login</a> — E-Mail: ${b.ts.tenant.email}, Registrierungscode: <strong>${b.ts.tenant.access_code}</strong>. Danach melden Sie sich mit Ihrem Passwort an.</p>`}
 <p>Mit freundlichen Grüßen<br>Ihre Hausverwaltung</p>`,
       attachment: { name: `Betriebskostenabrechnung-${b.s.year}.pdf`, content: pdf },
     });

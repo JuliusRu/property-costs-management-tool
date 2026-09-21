@@ -5,7 +5,7 @@ export type Settings = { heating_type: HeatingType; consumption_share: number; h
 export type LeaseClause = { topic: string; quote: string; page: number | null };
 export type Lease = { prepayment_type: "vorauszahlung" | "pauschale"; key_overrides: Partial<Record<string, string>>; excluded_categories: string[]; clauses: LeaseClause[]; source_file: string | null; confirmed: boolean };
 export type LeaseExtraction = Lease & { tenant_name: string; unit_hint: string; move_in: string | null; move_out: string | null; monthly_prepayment_cents: number; confidence: number; notes: string };
-export type Tenant = { id: number; unit_id: number; name: string; email: string; monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string; lease: Lease };
+export type Tenant = { id: number; unit_id: number; name: string; email: string; monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string; registered: boolean; lease: Lease };
 export type Property = { id: number; name: string; address: string; country: string; settings: Settings; units: Unit[]; tenants: Tenant[] };
 export type Invoice = {
   id: number; property_id: number; provider: string; category: string; description: string | null; amount_cents: number;
@@ -34,7 +34,10 @@ const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "cont
 
 export const api = {
   login: (password: string) => req<{ ok: true }>("/api/login", json({ password })),
-  tenantLogin: (email: string, code: string) => req<{ ok: true }>("/api/tenant-login", json({ email, code })),
+  tenantLogin: (email: string, password: string) => req<{ ok: true }>("/api/tenant-login", json({ email, password })),
+  tenantRegister: (email: string, code: string, password: string) => req<{ ok: true }>("/api/tenant-register", json({ email, code, password })),
+  publicConfig: () => req<{ demo: boolean }>("/api/public-config"),
+  resetAccess: (tenantId: number) => req<Tenant>(`/api/tenants/${tenantId}/reset-access`, { method: "POST" }),
   tenantLogout: () => req("/api/tenant-logout", { method: "POST" }),
   logout: () => req("/api/logout", { method: "POST" }),
   me: () => req<{ role: string }>("/api/me"),

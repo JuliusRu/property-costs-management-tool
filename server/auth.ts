@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual, scryptSync, randomBytes } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 
 const secret = () => {
@@ -59,4 +59,18 @@ export function requireLandlord(req: Request, res: Response, next: NextFunction)
 export function tenantIdFromSession(req: Request): number | null {
   const s = verifySession(readCookie(req, "tenant"), "tenant");
   return s ? Number(s.subject) : null;
+}
+
+// Password hashing with scrypt (built in, no dependency). Format: salt:hash, both hex.
+export function hashPassword(pw: string): string {
+  const salt = randomBytes(16);
+  return `${salt.toString("hex")}:${scryptSync(pw, salt, 64).toString("hex")}`;
+}
+export function verifyPassword(pw: string, stored: string | null): boolean {
+  if (!stored) return false;
+  const [saltHex, hashHex] = stored.split(":");
+  if (!saltHex || !hashHex) return false;
+  const calc = scryptSync(pw, Buffer.from(saltHex, "hex"), 64);
+  const want = Buffer.from(hashHex, "hex");
+  return calc.length === want.length && timingSafeEqual(calc, want);
 }

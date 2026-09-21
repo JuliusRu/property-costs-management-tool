@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { db, newAccessCode } from "./db.js";
+import { hashPassword } from "./auth.js";
 
 export function resetAndSeed() {
   db.exec("DELETE FROM statements; DELETE FROM runs; DELETE FROM invoices; DELETE FROM tenants; DELETE FROM units; DELETE FROM properties; DELETE FROM sqlite_sequence;");
@@ -19,17 +20,19 @@ export function seedIfEmpty() {
     "INSERT INTO units (property_id, label, area_sqm, persons, heating_kwh, water_m3) VALUES (?, ?, ?, ?, ?, ?)"
   );
   const insTenant = db.prepare(
-    "INSERT INTO tenants (unit_id, name, email, monthly_prepayment_cents, move_in, move_out, portal_token, access_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO tenants (unit_id, name, email, monthly_prepayment_cents, move_in, move_out, portal_token, access_code, password_hash, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   );
   // DG was vacant Jan–Aug 2025: Tom moved in on 1 Sept. That vacancy share must stay with the owner.
   const units = [
-    { label: "EG links", area: 58, persons: 1, heat: 4100, water: 38, tenant: "Lena Hoffmann", email: "lena.hoffmann@example.com", prepay: 19000, moveIn: "2022-04-01", code: "LENA2025" },
-    { label: "1. OG", area: 74, persons: 2, heat: 6300, water: 71, tenant: "Familie Öztürk", email: "oeztuerk@example.com", prepay: 21000, moveIn: "2019-10-01", code: newAccessCode() },
-    { label: "DG", area: 46, persons: 1, heat: 3900, water: 34, tenant: "Tom Becker", email: "tom.becker@example.com", prepay: 25000, moveIn: "2025-09-01", code: newAccessCode() },
+    { label: "EG links", area: 58, persons: 1, heat: 4100, water: 38, tenant: "Lena Hoffmann", email: "lena.hoffmann@example.com", prepay: 19000, moveIn: "2022-04-01", code: "LENA2025", password: "demo1234" },
+    { label: "1. OG", area: 74, persons: 2, heat: 6300, water: 71, tenant: "Familie Öztürk", email: "oeztuerk@example.com", prepay: 21000, moveIn: "2019-10-01", code: "OEZT2025", password: null },
+    { label: "DG", area: 46, persons: 1, heat: 3900, water: 34, tenant: "Tom Becker", email: "tom.becker@example.com", prepay: 25000, moveIn: "2025-09-01", code: newAccessCode(), password: null },
   ];
   for (const u of units) {
     const r = insUnit.run(pid, u.label, u.area, u.persons, u.heat, u.water);
-    insTenant.run(Number(r.lastInsertRowid), u.tenant, u.email, u.prepay, u.moveIn, null, randomBytes(16).toString("hex"), u.code);
+    // Lena is already registered (demo login); the others still have to register with their code.
+    insTenant.run(Number(r.lastInsertRowid), u.tenant, u.email, u.prepay, u.moveIn, null, randomBytes(16).toString("hex"), u.code,
+      u.password ? hashPassword(u.password) : null, u.password ? "2026-01-15 10:00:00" : null);
   }
 
   // A couple of invoices already in the system for 2025 so the dashboard isn't empty.
