@@ -1,0 +1,16 @@
+# Secrets — nie ins Repo
+.env
+.env.*
+!.env.example
+
+# Dependencies / Build
+node_modules/
+dist/
+build/
+.venv/
+__pycache__/
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
