@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, CATEGORIES, KEYS, POOLS, type Extraction, type Invoice, type Pool, type Property } from "../api";
 import { Badge, Button, Card, Empty, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
+import { DataTable, type Column } from "../table";
 
 const YEAR = new Date().getFullYear() - 1;
 
@@ -66,19 +67,21 @@ export default function Invoices({ property }: { property: Property }) {
       {invoices.length === 0 ? (
         <Empty title={t("i.empty", { y: year })}>{t("i.empty.sub")}</Empty>
       ) : (
-        <Card className="overflow-x-auto">
-          <table className="w-full min-w-[820px] text-sm">
-            <thead className="text-left text-xs text-mute">
-              <tr><th className="px-5 py-3 font-medium">{t("i.th.provider")}</th><th className="px-5 py-3 font-medium">{t("i.th.category")}</th><th className="px-5 py-3 font-medium">{t("i.th.scope")}</th><th className="px-5 py-3 font-medium">{t("i.th.period")}</th><th className="px-5 py-3 font-medium">{t("i.th.key")}</th><th className="px-5 py-3 font-medium">{t("i.th.source")}</th><th className="px-5 py-3 text-right font-medium">{t("i.th.amount")}</th></tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {visible.map((i) => <Row key={i.id} inv={i} units={property.units} onEdit={() => setEdit(i)} onChange={load} />)}
-            </tbody>
-            <tfoot className="border-t border-line">
-              <tr><td className="px-5 py-3 text-mute" colSpan={6}>{t("i.foot.excluded")}</td><td className="num px-5 py-3 text-right text-mute"><Money cents={excluded} /></td></tr>
-              <tr className="font-bold"><td className="px-5 py-3" colSpan={6}>{t("i.foot.allocable")}</td><td className="num px-5 py-3 text-right"><Money cents={allocable} /></td></tr>
-            </tfoot>
-          </table>
+        <Card>
+          <DataTable<Invoice> rows={visible} rowKey={(i) => i.id} minWidth={960} defaultSort={{ key: "period", dir: 1 }} rowClass={(i) => (!i.allocable ? "opacity-60" : "")}
+            columns={[
+              { key: "provider", label: t("i.th.provider"), sort: (i) => i.provider, render: (i) => <><button className="text-left font-semibold hover:text-cobalt" onClick={() => setEdit(i)}>{i.provider}</button><div className="text-xs text-mute">{i.description}{i.file_name && <> · <a className="underline" href={`/api/invoices/${i.id}/file`} target="_blank" rel="noreferrer">PDF</a></>}</div>{i.ai_notes && <div className="mt-1 text-xs text-[#8a5a00]">{i.ai_notes}</div>}</> },
+              { key: "category", label: t("i.th.category"), sort: (i) => t(`cat.${i.category}` as Key), render: (i) => <>{t(`cat.${i.category}` as Key)}{!i.allocable && <div className="mt-1"><Badge tone="red">{t("i.notAllocable")}</Badge></div>}{i.allocable && i.non_allocable_cents > 0 && <div className="mt-1 text-xs text-ember"><Money cents={i.non_allocable_cents} /> {t("i.excluded")}{i.non_allocable_reason ? ` — ${i.non_allocable_reason}` : ""}</div>}</> },
+              { key: "scope", label: t("i.th.scope"), sort: (i) => (i.unit_id ? property.units.find((u) => u.id === i.unit_id)?.label ?? "" : ""), render: (i) => <ScopeSelect inv={i} units={property.units} onChange={load} /> },
+              { key: "period", label: t("i.th.period"), sort: (i) => i.period_start, nowrap: true, render: (i) => <span className="num text-mute">{i.period_start} – {i.period_end}</span> },
+              { key: "key", label: t("i.th.key"), sort: (i) => t(`key.${i.allocation_key}` as Key), render: (i) => <KeySelect inv={i} onChange={load} /> },
+              { key: "source", label: t("i.th.source"), sort: (i) => i.source, render: (i) => <SourceBadge inv={i} /> },
+              { key: "amount", label: t("i.th.amount"), align: "right", sort: (i) => i.amount_cents, render: (i) => <span className="font-semibold"><Money cents={i.amount_cents} /></span> },
+            ] satisfies Column<Invoice>[]}
+            footer={<>
+              <tr><td className="px-4 py-3 text-mute" colSpan={6}>{t("i.foot.excluded")}</td><td className="num px-4 py-3 text-right text-mute"><Money cents={excluded} /></td></tr>
+              <tr className="font-bold"><td className="px-4 py-3" colSpan={6}>{t("i.foot.allocable")}</td><td className="num px-4 py-3 text-right"><Money cents={allocable} /></td></tr>
+            </>} />
         </Card>
       )}
 
@@ -104,43 +107,30 @@ export default function Invoices({ property }: { property: Property }) {
   );
 }
 
-function Row({ inv, units, onEdit, onChange }: { inv: Invoice; units: Property["units"]; onEdit: () => void; onChange: () => void }) {
+function ScopeSelect({ inv, units, onChange }: { inv: Invoice; units: Property["units"]; onChange: () => void }) {
   const t = useT();
-  const change = async (k: string) => { await api.updateInvoice(inv.id, { allocation_key: k }); onChange(); };
-  const changeScope = async (v: string) => { await api.updateInvoice(inv.id, { unit_id: v ? Number(v) : null } as never); onChange(); };
-  const conf = inv.ai_confidence;
+  return (
+    <select className={`max-w-[160px] rounded-md border px-2 py-1 text-xs ${inv.unit_id ? "border-cobalt bg-cobalt-soft text-cobalt-deep" : "border-line"}`} value={inv.unit_id ?? ""} onChange={async (e) => { await api.updateInvoice(inv.id, { unit_id: e.target.value ? Number(e.target.value) : null } as never); onChange(); }}>
+      <option value="">{t("i.scope.building")}</option>{units.map((u) => <option key={u.id} value={u.id}>{t("i.scope.unit", { l: u.label })}</option>)}
+    </select>
+  );
+}
+function KeySelect({ inv, onChange }: { inv: Invoice; onChange: () => void }) {
+  const t = useT();
+  return (
+    <>
+      <select className="max-w-[220px] rounded-md border border-line px-2 py-1 text-xs" value={inv.allocation_key} disabled={!!inv.unit_id} onChange={async (e) => { await api.updateInvoice(inv.id, { allocation_key: e.target.value }); onChange(); }}>
+        {KEYS.map((k) => <option key={k} value={k}>{t(`key.${k}`)}</option>)}
+      </select>
+      {!inv.unit_id && inv.pool !== "all" && <div className="mt-1 text-xs text-cobalt-deep">{t(`pool.${inv.pool}`)}</div>}
+    </>
+  );
+}
+function SourceBadge({ inv }: { inv: Invoice }) {
+  const t = useT();
   const src = (["sync", "upload", "sample"].includes(inv.source) ? inv.source : "manual") as "sync" | "upload" | "sample" | "manual";
   const tone = { sync: "blue", upload: "green", sample: "amber", manual: "slate" } as const;
-  return (
-    <tr className={!inv.allocable ? "opacity-60" : ""}>
-      <td className="px-5 py-3">
-        <button className="text-left font-semibold hover:text-cobalt" onClick={onEdit}>{inv.provider}</button>
-        <div className="text-xs text-mute">{inv.description}{inv.file_name && <> · <a className="underline" href={`/api/invoices/${inv.id}/file`} target="_blank" rel="noreferrer">PDF</a></>}</div>
-        {inv.ai_notes && <div className="mt-1 text-xs text-[#8a5a00]">{inv.ai_notes}</div>}
-      </td>
-      <td className="px-5 py-3">{t(`cat.${inv.category}` as Key)}
-        {!inv.allocable && <div className="mt-1"><Badge tone="red">{t("i.notAllocable")}</Badge></div>}
-        {inv.allocable && inv.non_allocable_cents > 0 && <div className="mt-1 text-xs text-ember"><Money cents={inv.non_allocable_cents} /> {t("i.excluded")}{inv.non_allocable_reason ? ` — ${inv.non_allocable_reason}` : ""}</div>}
-      </td>
-      <td className="px-5 py-3">
-        <select className={`max-w-[160px] rounded-md border px-2 py-1 text-xs ${inv.unit_id ? "border-cobalt bg-cobalt-soft text-cobalt-deep" : "border-line"}`} value={inv.unit_id ?? ""} onChange={(e) => changeScope(e.target.value)}>
-          <option value="">{t("i.scope.building")}</option>{units.map((u) => <option key={u.id} value={u.id}>{t("i.scope.unit", { l: u.label })}</option>)}
-        </select>
-      </td>
-      <td className="num whitespace-nowrap px-5 py-3 text-mute">{inv.period_start} – {inv.period_end}</td>
-      <td className="px-5 py-3">
-        <select className="max-w-[220px] rounded-md border border-line px-2 py-1 text-xs" value={inv.allocation_key} disabled={!!inv.unit_id} onChange={(e) => change(e.target.value)}>
-          {KEYS.map((k) => <option key={k} value={k}>{t(`key.${k}`)}</option>)}
-        </select>
-        {!inv.unit_id && inv.pool !== "all" && <div className="mt-1 text-xs text-cobalt-deep">{t(`pool.${inv.pool}`)}</div>}
-      </td>
-      <td className="px-5 py-3">
-        <Badge tone={tone[src]}>{t(`i.src.${src}`)}</Badge>
-        {conf != null && <div className="mt-1 text-xs text-mute">{t("i.confidence", { p: (conf * 100).toFixed(0) })}</div>}
-      </td>
-      <td className="num px-5 py-3 text-right font-semibold"><Money cents={inv.amount_cents} /></td>
-    </tr>
-  );
+  return <><Badge tone={tone[src]}>{t(`i.src.${src}`)}</Badge>{inv.ai_confidence != null && <div className="mt-1 text-xs text-mute">{t("i.confidence", { p: (inv.ai_confidence * 100).toFixed(0) })}</div>}</>;
 }
 
 export function InvoiceForm({ title, sub, initial, units, onClose, onSave, onDelete, onSkip }: { title: string; sub?: React.ReactNode; initial: Extraction & { unit_id?: number | null }; units?: Property["units"]; onClose: () => void; onSave: (e: Extraction & { unit_id: number | null }) => Promise<void>; onDelete?: () => Promise<void>; onSkip?: () => void }) {

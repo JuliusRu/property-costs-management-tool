@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type Check, type PaymentStatus, type Property, type Run, type Statement } from "../api";
-import { Badge, BigMoney, Button, Card, Empty, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
+import { Badge, Button, Card, Empty, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
+import { DataTable, type Column } from "../table";
 
 const YEAR = new Date().getFullYear() - 1;
 const EMPTY: Run = { statements: [], summary: null, checks: [], created_at: null };
@@ -12,6 +13,8 @@ export default function Statements({ property, onChange }: { property: Property;
   const [run, setRun] = useState<Run>(EMPTY);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [open, setOpen] = useState<Set<number>>(new Set());
+  const tenantOf = (s: Statement) => property.tenants.find((x) => x.id === s.tenant_id);
   const load = () => api.statements(property.id, year).then(setRun);
   useEffect(() => { load(); }, [property.id, year]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -70,9 +73,26 @@ export default function Statements({ property, onChange }: { property: Property;
         </div>
       )}
 
-      <div className="space-y-4">
-        {statements.map((s) => <StatementCard key={s.id} s={s} property={property} blocked={blockers.length > 0} onChange={async () => { await load(); onChange(); }} />)}
-      </div>
+      {statements.length > 0 && (
+        <Card>
+          <DataTable<Statement> rows={statements} rowKey={(s) => s.id} minWidth={1000} defaultSort={{ key: "tenant", dir: 1 }}
+            expanded={(s) => (open.has(s.id) ? <StatementDetails s={s} property={property} onChange={async () => { await load(); onChange(); }} /> : null)}
+            columns={[
+              { key: "tenant", label: t("tn.th.name"), sort: (s) => tenantOf(s)?.name ?? "", render: (s) => { const tn = tenantOf(s); const u = property.units.find((x) => x.id === tn?.unit_id); const partial = s.lines.some((l) => l.days_occupied < l.days_in_year); return <><div className="font-semibold">{tn?.name} {partial && <Badge tone="amber">{t("s.partial")}</Badge>}</div><div className="text-xs text-mute">{u?.label} · {tn?.email}</div></>; } },
+              { key: "costs", label: t("s.costs"), align: "right", sort: (s) => s.total_cents, render: (s) => <Money cents={s.total_cents} /> },
+              { key: "prepaid", label: t("s.prepaid"), align: "right", sort: (s) => s.prepaid_cents, render: (s) => <Money cents={s.prepaid_cents} /> },
+              { key: "balance", label: t("s.th.balance"), align: "right", sort: (s) => s.balance_cents, render: (s) => <><div className="text-xs text-mute">{s.balance_cents > 0 ? t("s.pays") : t("s.refund")}</div><Money cents={s.balance_cents} signed className="text-lg" /></> },
+              { key: "sent", label: t("s.th.sent"), sort: (s) => s.sent_at ?? "", render: (s) => s.sent_at ? <Badge tone="green">{t("s.sentOn", { d: s.sent_at.slice(0, 10) })}</Badge> : <Badge tone="amber">{t("s.notSent")}</Badge> },
+              { key: "payment", label: t("s.th.payment"), sort: (s) => s.payment_status, render: (s) => s.balance_cents !== 0 ? <PaymentControl sid={s.id} balance={s.balance_cents} status={s.payment_status} paidAt={s.paid_at} note={s.payment_note} onChange={async () => { await load(); onChange(); }} compact /> : <span className="text-xs text-mute">—</span> },
+              { key: "actions", label: "", align: "right", nowrap: true, render: (s) => { const tn = tenantOf(s); return <span className="inline-flex items-center gap-2">
+                <a className="text-sm font-semibold text-cobalt hover:underline" href={`/api/statements/${s.id}/pdf`} target="_blank" rel="noreferrer">{t("common.pdf")}</a>
+                {tn && <a className="text-sm font-semibold text-cobalt hover:underline" href={`/portal/${tn.portal_token}`} target="_blank" rel="noreferrer">{t("common.portal")}</a>}
+                <SendButton s={s} blocked={blockers.length > 0} onChange={async () => { await load(); onChange(); }} />
+                <Button variant="ghost" size="sm" onClick={() => setOpen((o) => { const n = new Set(o); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })}>{open.has(s.id) ? t("s.hideLines") : t("s.showLines")}</Button>
+              </span>; } },
+            ] satisfies Column<Statement>[]} />
+        </Card>
+      )}
     </>
   );
 }
@@ -100,51 +120,30 @@ function Checks({ checks }: { checks: Check[] }) {
   );
 }
 
-function StatementCard({ s, property, blocked, onChange }: { s: Statement; property: Property; blocked: boolean; onChange: () => void }) {
+function SendButton({ s, blocked, onChange }: { s: Statement; blocked: boolean; onChange: () => void }) {
   const t = useT();
-  const tenant = property.tenants.find((x) => x.id === s.tenant_id)!;
-  const unit = property.units.find((u) => u.id === tenant.unit_id)!;
-  const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState("");
-  const partial = s.lines.some((l) => l.days_occupied < l.days_in_year);
+  return <span className="inline-flex items-center gap-1"><Button variant="ghost" size="sm" disabled={sending || blocked} title={err} onClick={async () => { setSending(true); setErr(""); try { await api.send(s.id); onChange(); } catch (e) { setErr((e as Error).message); alert((e as Error).message); } setSending(false); }}>{sending ? <Spinner /> : null} {s.sent_at ? t("s.resend") : t("s.send")}</Button></span>;
+}
+
+/** Expanded row: the lines with their formulas plus the prepayment suggestion. */
+function StatementDetails({ s, property }: { s: Statement; property: Property; onChange: () => void }) {
+  const t = useT();
+  const tenant = property.tenants.find((x) => x.id === s.tenant_id);
   return (
-    <Card>
-      <div className="flex flex-wrap items-center gap-5 px-6 py-5">
-        <div className="min-w-0 flex-1">
-          <div className="text-lg font-bold">{tenant.name} <span className="font-normal text-mute">· {unit.label}</span> {partial && <Badge tone="amber">{t("s.partial")}</Badge>}</div>
-          <div className="num text-sm text-mute">{t("s.costs")} <Money cents={s.total_cents} /> − {t("s.prepaid")} <Money cents={s.prepaid_cents} /> · {tenant.email}</div>
-        </div>
-        <BigMoney cents={s.balance_cents} label={s.balance_cents > 0 ? t("s.pays") : t("s.refund")} />
-        <div className="flex items-center gap-2 border-l border-line pl-5">
-          {s.sent_at ? <Badge tone="green">{t("s.sentOn", { d: s.sent_at.slice(0, 10) })}</Badge> : <Badge tone="amber">{t("s.notSent")}</Badge>}
-          <a className="text-sm font-semibold text-cobalt hover:underline" href={`/api/statements/${s.id}/pdf`} target="_blank" rel="noreferrer">{t("common.pdf")}</a>
-          <a className="text-sm font-semibold text-cobalt hover:underline" href={`/portal/${tenant.portal_token}`} target="_blank" rel="noreferrer">{t("common.portal")}</a>
-          <Button variant="ghost" size="sm" disabled={sending || blocked} onClick={async () => { setSending(true); setErr(""); try { await api.send(s.id); onChange(); } catch (e) { setErr((e as Error).message); } setSending(false); }}>{sending ? <Spinner /> : null} {s.sent_at ? t("s.resend") : t("s.send")}</Button>
-          <Button variant="ghost" size="sm" onClick={() => setOpen(!open)}>{open ? t("s.hideLines") : t("s.showLines")}</Button>
-        </div>
-      </div>
-      {err && <div className="px-6 pb-3 text-xs text-ember">{err}</div>}
-      {s.balance_cents !== 0 && <div className="flex items-center gap-3 border-t border-line px-6 py-2 text-xs"><span className="text-mute">{t("s.th.payment")}</span><PaymentControl sid={s.id} balance={s.balance_cents} status={s.payment_status} paidAt={s.paid_at} note={s.payment_note} onChange={onChange} /></div>}
-      {s.suggested_prepayment_cents > 0 && Math.abs(s.suggested_prepayment_cents - tenant.monthly_prepayment_cents) >= 500 && (
-        <div className="num border-t border-line px-6 py-2 text-xs text-ink-soft">{t("s.suggest")}: <b><Money cents={s.suggested_prepayment_cents} /></b> <span className="text-mute">(<Money cents={tenant.monthly_prepayment_cents} /> {t("s.prepaid")})</span></div>
+    <div className="rounded-lg border border-line bg-paper">
+      <DataTable<Statement["lines"][number]> rows={s.lines} rowKey={(l) => `${l.invoice_id}-${l.category}-${l.share_cents}`} minWidth={700} dense
+        columns={[
+          { key: "cost", label: t("s.th.cost"), sort: (l) => t(`cat.${l.category}` as Key), render: (l) => <><div className="font-medium">{t(`cat.${l.category}` as Key)}</div><div className="text-xs text-mute">{l.description} · {l.provider}</div></> },
+          { key: "calc", label: t("s.th.calc"), render: (l) => <div className="text-xs"><div className="text-mute">{t(`key.${l.allocation_key}` as Key)}</div><div className="num mt-0.5 text-ink-soft">{l.formula}</div></div> },
+          { key: "building", label: t("s.th.building"), align: "right", sort: (l) => l.total_cents, render: (l) => <Money cents={l.total_cents} /> },
+          { key: "share", label: t("s.th.share"), align: "right", sort: (l) => l.share_cents, render: (l) => <span className="font-semibold"><Money cents={l.share_cents} /></span> },
+        ]} />
+      {tenant && s.suggested_prepayment_cents > 0 && Math.abs(s.suggested_prepayment_cents - tenant.monthly_prepayment_cents) >= 500 && (
+        <div className="num border-t border-line px-4 py-2 text-xs text-ink-soft">{t("s.suggest")}: <b><Money cents={s.suggested_prepayment_cents} /></b> <span className="text-mute">(<Money cents={tenant.monthly_prepayment_cents} /> {t("s.prepaid")})</span></div>
       )}
-      {open && (
-        <table className="w-full border-t border-line text-sm">
-          <thead className="text-left text-xs text-mute"><tr><th className="px-6 py-2 font-medium">{t("s.th.cost")}</th><th className="px-6 py-2 font-medium">{t("s.th.calc")}</th><th className="px-6 py-2 text-right font-medium">{t("s.th.building")}</th><th className="px-6 py-2 text-right font-medium">{t("s.th.share")}</th></tr></thead>
-          <tbody className="divide-y divide-line">
-            {s.lines.map((l, i) => (
-              <tr key={i}>
-                <td className="px-6 py-2.5 align-top"><div className="font-medium">{t(`cat.${l.category}` as Key)}</div><div className="text-xs text-mute">{l.description} · {l.provider}</div></td>
-                <td className="px-6 py-2.5 align-top text-xs"><div className="text-mute">{t(`key.${l.allocation_key}` as Key)}</div><div className="num mt-0.5 text-ink-soft">{l.formula}</div></td>
-                <td className="num px-6 py-2.5 text-right align-top"><Money cents={l.total_cents} /></td>
-                <td className="num px-6 py-2.5 text-right align-top font-semibold"><Money cents={l.share_cents} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
+    </div>
   );
 }
 

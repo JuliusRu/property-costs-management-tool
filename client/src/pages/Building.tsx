@@ -4,8 +4,10 @@ import { useRef } from "react";
 import { api, CATEGORIES, HEATING_TYPES, KEYS, type Invoice, type Lease, type LeaseExtraction, type Property, type Settings, type Tenant, type TenantRow, type Unit, type UnitType } from "../api";
 import { Badge, Button, Card, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
+import { DataTable, type Column } from "../table";
 
 const YEAR = new Date().getFullYear() - 1;
+type OccRow = { unit: Unit; tenant: Tenant | null; first: boolean };
 
 export default function Building({ property, onChange }: { property: Property; onChange: () => void }) {
   const t = useT();
@@ -17,6 +19,8 @@ export default function Building({ property, onChange }: { property: Property; o
   useEffect(() => { api.invoices(property.id).then(setInvoices); }, [property.id]);
 
   const thisYear = invoices.filter((i) => i.period_start.startsWith(String(YEAR)));
+  // one row per tenancy; a unit without tenants gets one "vacant" row
+  const occRows: OccRow[] = property.units.flatMap((u): OccRow[] => { const ts = property.tenants.filter((x) => x.unit_id === u.id); return ts.length ? ts.map((x, i) => ({ unit: u, tenant: x, first: i === 0 })) : [{ unit: u, tenant: null, first: true }]; });
   const total = thisYear.filter((i) => i.allocable).reduce((s, i) => s + i.amount_cents - i.non_allocable_cents, 0);
   const totalArea = property.units.reduce((s, u) => s + u.area_sqm, 0);
 
@@ -32,43 +36,20 @@ export default function Building({ property, onChange }: { property: Property; o
         <Stat label={t("b.heat")} value={<span className="text-base">{(t(`set.heating.${property.settings.heating_type}` as Key).split(" — ")[1] ?? "").split(" (")[0]}</span>} sub={property.settings.heating_type === "decentral" ? "—" : property.settings.heizkv_exempt ? "§ 11 HeizkostenV" : `${Math.round(property.settings.consumption_share * 100)} % kWh / ${100 - Math.round(property.settings.consumption_share * 100)} % m²`} />
       </div>
 
-      <Card className="overflow-x-auto">
-        <div className="flex items-center justify-between border-b border-line px-5 py-3">
+      <Card>
+        <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <div className="font-semibold">{t("b.occupancy", { y: YEAR })} <span className="font-normal text-mute">· {t("b.occupied", { n: property.units.filter((u) => property.tenants.some((x) => x.unit_id === u.id)).length, m: property.units.length })}</span></div>
           <div className="flex items-center gap-4 text-xs text-mute"><span className="inline-flex items-center gap-1.5"><i className="inline-block h-2.5 w-4 rounded-sm bg-cobalt" />{t("b.legend.tenant")}</span><span className="inline-flex items-center gap-1.5"><i className="inline-block h-2.5 w-4 rounded-sm bg-sun" />{t("b.legend.vacant")}</span></div>
         </div>
-        {property.units.length === 0 && <div className="px-5 py-12 text-center text-sm text-mute">{t("b.noUnits")}</div>}
-        {property.units.length > 0 && (
-          <table className="w-full min-w-[900px] text-sm">
-            <thead className="text-left text-xs text-mute"><tr>
-              <th className="px-5 py-2.5 font-medium">{t("b.th.unit")}</th><th className="px-5 py-2.5 font-medium">{t("b.th.tenant")}</th><th className="px-5 py-2.5 font-medium">{t("b.th.period")}</th>
-              <th className="px-5 py-2.5 text-right font-medium">{t("b.th.prepay")}</th><th className="px-5 py-2.5 font-medium">{t("b.th.occupancy", { y: YEAR })}</th><th /></tr></thead>
-            <tbody className="divide-y divide-line">
-              {property.units.map((u) => {
-                const tenants = property.tenants.filter((x) => x.unit_id === u.id);
-                const rows = tenants.length ? tenants : [null];
-                return rows.map((x, i) => (
-                  <tr key={`${u.id}-${x?.id ?? "v"}`} className={!x ? "bg-sun-soft/40" : ""}>
-                    {i === 0 && <td className="px-5 py-3 align-top" rowSpan={rows.length}>
-                      <button className="text-left font-semibold hover:text-cobalt" onClick={() => setEditUnit(u)}>{u.label}</button> {u.unit_type !== "residential" && <Badge>{t(`unit.${u.unit_type}` as Key)}</Badge>}
-                      <div className="text-xs text-mute">{u.area_sqm} m² · {u.persons} {u.persons === 1 ? t("common.person") : t("common.persons")}{u.mea > 0 && <> · {u.mea.toLocaleString("de-DE", { minimumFractionDigits: 3 })} MEA</>}</div>
-                      <div className="text-xs text-mute">{u.heating_kwh.toLocaleString("de-DE")} kWh · {u.water_m3} m³</div>
-                    </td>}
-                    <td className="px-5 py-3 align-top">
-                      {x ? <><button className="font-medium hover:text-cobalt" onClick={() => setEditTenant(x)}>{x.name}</button><div className="text-xs text-mute">{x.email}</div>
-                        <div className="mt-1 flex flex-wrap gap-1">{hasRules(x.lease) && <Badge tone={x.lease.confirmed ? "green" : "red"}>{x.lease.confirmed ? t("lease.confirmed") : t("lease.unconfirmed")}</Badge>}<Badge tone={x.registered ? "green" : "slate"}>{x.registered ? t("b.tenant.registered") : t("b.tenant.notRegistered")}</Badge></div></>
-                        : <Badge tone="amber">{t("b.vacant")}</Badge>}
-                    </td>
-                    <td className="num px-5 py-3 align-top text-xs text-mute">{x ? <>{x.move_in ? t("tn.since", { d: x.move_in }) : "—"}{x.move_out && <div>{t("tn.until", { d: x.move_out })}</div>}</> : "—"}</td>
-                    <td className="num px-5 py-3 text-right align-top">{x ? <><Money cents={x.monthly_prepayment_cents} /><span className="text-xs text-mute">/{t("common.month")}</span></> : "—"}</td>
-                    <td className="px-5 py-3 align-top"><OccupancyBar tenants={x ? [x] : []} year={YEAR} /></td>
-                    <td className="px-3 py-3 text-right align-top whitespace-nowrap">{i === 0 && <Button size="sm" variant="ghost" onClick={() => setEditTenant({ unit_id: u.id })}>{t("b.addTenant")}</Button>}</td>
-                  </tr>
-                ));
-              })}
-            </tbody>
-          </table>
-        )}
+        <DataTable<OccRow> rows={occRows} rowKey={(r) => `${r.unit.id}-${r.tenant?.id ?? "v"}`} minWidth={900} defaultSort={{ key: "unit", dir: 1 }} emptyText={t("b.noUnits")} rowClass={(r) => (!r.tenant ? "bg-sun-soft/40" : "")}
+          columns={[
+            { key: "unit", label: t("b.th.unit"), sort: (r) => r.unit.label, render: (r) => <><button className="text-left font-semibold hover:text-cobalt" onClick={() => setEditUnit(r.unit)}>{r.unit.label}</button> {r.unit.unit_type !== "residential" && <Badge>{t(`unit.${r.unit.unit_type}` as Key)}</Badge>}<div className="text-xs text-mute">{r.unit.area_sqm} m² · {r.unit.persons} {r.unit.persons === 1 ? t("common.person") : t("common.persons")}{r.unit.mea > 0 && <> · {r.unit.mea.toLocaleString("de-DE", { minimumFractionDigits: 3 })} MEA</>}</div><div className="text-xs text-mute">{r.unit.heating_kwh.toLocaleString("de-DE")} kWh · {r.unit.water_m3} m³</div></> },
+            { key: "tenant", label: t("b.th.tenant"), sort: (r) => r.tenant?.name ?? "", render: (r) => r.tenant ? <><button className="font-medium hover:text-cobalt" onClick={() => setEditTenant(r.tenant!)}>{r.tenant.name}</button><div className="text-xs text-mute">{r.tenant.email}</div><div className="mt-1 flex flex-wrap gap-1">{hasRules(r.tenant.lease) && <Badge tone={r.tenant.lease.confirmed ? "green" : "red"}>{r.tenant.lease.confirmed ? t("lease.confirmed") : t("lease.unconfirmed")}</Badge>}<Badge tone={r.tenant.registered ? "green" : "slate"}>{r.tenant.registered ? t("b.tenant.registered") : t("b.tenant.notRegistered")}</Badge></div></> : <Badge tone="amber">{t("b.vacant")}</Badge> },
+            { key: "period", label: t("b.th.period"), sort: (r) => r.tenant?.move_in ?? "", nowrap: true, render: (r) => <span className="num text-xs text-mute">{r.tenant ? <>{r.tenant.move_in ? t("tn.since", { d: r.tenant.move_in }) : "—"}{r.tenant.move_out && <div>{t("tn.until", { d: r.tenant.move_out })}</div>}</> : "—"}</span> },
+            { key: "prepay", label: t("b.th.prepay"), align: "right", sort: (r) => r.tenant?.monthly_prepayment_cents ?? null, render: (r) => r.tenant ? <><Money cents={r.tenant.monthly_prepayment_cents} /><span className="text-xs text-mute">/{t("common.month")}</span></> : "—" },
+            { key: "occ", label: t("b.th.occupancy", { y: YEAR }), width: "26%", render: (r) => <OccupancyBar tenants={r.tenant ? [r.tenant] : []} year={YEAR} /> },
+            { key: "actions", label: "", align: "right", nowrap: true, render: (r) => r.first ? <Button size="sm" variant="ghost" onClick={() => setEditTenant({ unit_id: r.unit.id })}>{t("b.addTenant")}</Button> : null },
+          ] satisfies Column<OccRow>[]} />
       </Card>
 
       <div className="mt-8 grid gap-4 md:grid-cols-2">

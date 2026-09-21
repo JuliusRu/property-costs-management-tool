@@ -3,8 +3,8 @@ import { api, DOC_KINDS, type Doc, type DocKind, type Property } from "../api";
 import { Badge, Button, Card, Empty, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
 import { InvoiceForm } from "./Invoices";
+import { DataTable, type Column } from "../table";
 
-type SortKey = "title" | "kind" | "provider" | "doc_date" | "amount_cents" | "tenant_name" | "size_bytes";
 type Group = "none" | "provider" | "year" | "kind";
 
 const KIND_TONE: Record<DocKind, "slate" | "green" | "amber" | "red" | "blue"> = { invoice: "blue", contract: "green", notice: "amber", insurance: "slate", meter: "slate", correspondence: "slate", statement: "green", other: "slate" };
@@ -17,7 +17,6 @@ export default function Documents({ property }: { property: Property }) {
   const [year, setYear] = useState<string>("");
   const [provider, setProvider] = useState<string>("");
   const [group, setGroup] = useState<Group>("none");
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "doc_date", dir: -1 });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [edit, setEdit] = useState<Doc | null>(null);
@@ -40,32 +39,14 @@ export default function Documents({ property }: { property: Property }) {
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    const rows = docs.filter((d) =>
+    return docs.filter((d) =>
       (!kind || d.kind === kind) &&
       (!year || (d.doc_date ?? d.created_at).startsWith(year)) &&
       (!provider || d.provider === provider) &&
       (!needle || [d.title, d.provider, d.notes, d.tenant_name].some((v) => v?.toLowerCase().includes(needle))));
-    const val = (d: Doc) => { const v = d[sort.key]; return v == null ? (typeof d.amount_cents === "number" && sort.key === "amount_cents" ? 0 : "") : v; };
-    return rows.sort((a, b) => { const x = val(a), y = val(b); const c = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true }); return c * sort.dir; });
-  }, [docs, q, kind, year, provider, sort]);
+  }, [docs, q, kind, year, provider]);
+  const groupOf = (d: Doc) => group === "provider" ? (d.provider ?? "—") : group === "year" ? (d.doc_date ?? d.created_at).slice(0, 4) : t(`d.kind.${d.kind}` as Key);
 
-  const groups = useMemo(() => {
-    if (group === "none") return [["", filtered] as [string, Doc[]]];
-    const m = new Map<string, Doc[]>();
-    for (const d of filtered) {
-      const k = group === "provider" ? (d.provider ?? "—") : group === "year" ? (d.doc_date ?? d.created_at).slice(0, 4) : t(`d.kind.${d.kind}` as Key);
-      m.set(k, [...(m.get(k) ?? []), d]);
-    }
-    return [...m.entries()].sort((a, b) => (group === "year" ? b[0].localeCompare(a[0]) : a[0].localeCompare(b[0])));
-  }, [filtered, group, t]);
-
-  const th = (key: SortKey, label: string, right = false) => (
-    <th className={`px-4 py-2.5 font-medium ${right ? "text-right" : "text-left"}`}>
-      <button className={`inline-flex items-center gap-1 hover:text-ink ${sort.key === key ? "text-ink" : ""}`} onClick={() => setSort({ key, dir: sort.key === key ? (sort.dir === 1 ? -1 : 1) : key === "doc_date" || key === "amount_cents" ? -1 : 1 })}>
-        {label}{sort.key === key && <span className="text-cobalt">{sort.dir === 1 ? "↑" : "↓"}</span>}
-      </button>
-    </th>
-  );
   const sizeStr = (n: number | null) => (n == null ? "—" : n > 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1000))} KB`);
 
   return (
@@ -90,39 +71,19 @@ export default function Documents({ property }: { property: Property }) {
             <span className="text-xs text-mute">{t("d.count", { n: filtered.length })}</span>
           </div>
 
-          <Card className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-sm">
-              <thead className="text-xs text-mute">
-                <tr>{th("title", t("d.th.title"))}{th("kind", t("d.th.kind"))}{th("provider", t("d.th.provider"))}{th("doc_date", t("d.th.date"))}{th("amount_cents", t("d.th.amount"), true)}{th("tenant_name", t("d.th.tenant"))}{th("size_bytes", t("d.th.size"), true)}<th /></tr>
-              </thead>
-              {groups.map(([g, rows]) => (
-                <tbody key={g} className="divide-y divide-line border-t border-line">
-                  {group !== "none" && <tr className="bg-surface"><td colSpan={8} className="px-4 py-1.5 text-xs font-semibold text-ink-soft">{g} <span className="font-normal text-mute">· {rows.length}</span></td></tr>}
-                  {rows.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-mute">{t("d.noMatch")}</td></tr>}
-                  {rows.map((d) => (
-                    <tr key={d.id} className="hover:bg-surface/60">
-                      <td className="px-4 py-2.5">
-                        <a className="font-semibold hover:text-cobalt" href={d.url} target="_blank" rel="noreferrer">{d.title}</a>
-                        {d.notes && <div className="text-xs text-mute">{d.kind === "statement" ? t(d.notes === "sent" ? "d.sent" : "d.draft") : d.source !== "upload" && d.kind === "invoice" ? t(`cat.${d.notes}` as Key) : d.notes}</div>}
-                      </td>
-                      <td className="px-4 py-2.5"><Badge tone={KIND_TONE[d.kind]}>{t(`d.kind.${d.kind}` as Key)}</Badge>
-                        {d.kind === "invoice" && d.source === "upload" && <div className="mt-1 text-xs">{d.invoice_id ? <span className="text-mint">{t("d.booked")}</span> : <span className="text-[#8a5a00]">{t("d.notBooked")}</span>}</div>}
-                        {d.kind === "contract" && d.lease_confirmed === false && <div className="mt-1 text-xs text-ember">{t("lease.unconfirmed")}</div>}
-                      </td>
-                      <td className="px-4 py-2.5">{d.provider ?? "—"}</td>
-                      <td className="num whitespace-nowrap px-4 py-2.5 text-mute">{d.doc_date ?? d.created_at.slice(0, 10)}</td>
-                      <td className="num px-4 py-2.5 text-right">{d.amount_cents != null ? <Money cents={d.amount_cents} /> : "—"}</td>
-                      <td className="px-4 py-2.5 text-mute">{d.tenant_name ?? "—"}</td>
-                      <td className="num px-4 py-2.5 text-right text-mute">{sizeStr(d.size_bytes)}</td>
-                      <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                        {d.source === "upload" && d.kind === "invoice" && !d.invoice_id && <Button size="sm" variant="ghost" className="mr-1" onClick={async () => { setBusy(true); try { setBook({ doc: d, extraction: await api.extractFromDocument(Number(d.id)) }); } catch (e) { setMsg((e as Error).message); } setBusy(false); }}>{t("d.book")}</Button>}
-                        {d.source === "upload" && <Button size="sm" variant="ghost" onClick={() => setEdit(d)}>✎</Button>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              ))}
-            </table>
+          <Card>
+            <DataTable<Doc> rows={filtered} rowKey={(d) => d.id} minWidth={900} defaultSort={{ key: "doc_date", dir: -1 }} emptyText={t("d.noMatch")}
+              groupBy={group === "none" ? undefined : groupOf} groupOrder={group === "year" ? (a, b) => b.localeCompare(a) : (a, b) => a.localeCompare(b)}
+              columns={[
+                { key: "title", label: t("d.th.title"), sort: (d) => d.title, render: (d) => <><a className="font-semibold hover:text-cobalt" href={d.url} target="_blank" rel="noreferrer">{d.title}</a>{d.notes && <div className="text-xs text-mute">{d.kind === "statement" ? t(d.notes === "sent" ? "d.sent" : "d.draft") : d.source !== "upload" && d.kind === "invoice" ? t(`cat.${d.notes}` as Key) : d.notes}</div>}</> },
+                { key: "kind", label: t("d.th.kind"), sort: (d) => t(`d.kind.${d.kind}` as Key), render: (d) => <><Badge tone={KIND_TONE[d.kind]}>{t(`d.kind.${d.kind}` as Key)}</Badge>{d.kind === "invoice" && d.source === "upload" && <div className="mt-1 text-xs">{d.invoice_id ? <span className="text-mint">{t("d.booked")}</span> : <span className="text-[#8a5a00]">{t("d.notBooked")}</span>}</div>}{d.kind === "contract" && d.lease_confirmed === false && <div className="mt-1 text-xs text-ember">{t("lease.unconfirmed")}</div>}</> },
+                { key: "provider", label: t("d.th.provider"), sort: (d) => d.provider ?? "", render: (d) => d.provider ?? "—" },
+                { key: "doc_date", label: t("d.th.date"), sort: (d) => d.doc_date ?? d.created_at.slice(0, 10), nowrap: true, render: (d) => <span className="num text-mute">{d.doc_date ?? d.created_at.slice(0, 10)}</span> },
+                { key: "amount", label: t("d.th.amount"), align: "right", sort: (d) => d.amount_cents, render: (d) => d.amount_cents != null ? <Money cents={d.amount_cents} /> : "—" },
+                { key: "tenant", label: t("d.th.tenant"), sort: (d) => d.tenant_name ?? "", render: (d) => <span className="text-mute">{d.tenant_name ?? "—"}</span> },
+                { key: "size", label: t("d.th.size"), align: "right", sort: (d) => d.size_bytes, render: (d) => <span className="text-mute">{sizeStr(d.size_bytes)}</span> },
+                { key: "actions", label: "", align: "right", nowrap: true, render: (d) => <>{d.source === "upload" && d.kind === "invoice" && !d.invoice_id && <Button size="sm" variant="ghost" className="mr-1" onClick={async () => { setBusy(true); try { setBook({ doc: d, extraction: await api.extractFromDocument(Number(d.id)) }); } catch (e) { setMsg((e as Error).message); } setBusy(false); }}>{t("d.book")}</Button>}{d.source === "upload" && <Button size="sm" variant="ghost" onClick={() => setEdit(d)}>✎</Button>}</> },
+              ] satisfies Column<Doc>[]} />
           </Card>
         </>
       )}

@@ -185,6 +185,8 @@ const dict = {
   "s.th.building": ["Building", "Objekt"],
   "s.th.share": ["Share", "Anteil"],
   "s.th.payment": ["Payment", "Zahlung"],
+  "s.th.balance": ["Balance", "Saldo"],
+  "s.th.sent": ["Sent", "Versand"],
 
   // portal
   "p.header": ["Tenant portal", "Mieterportal"],

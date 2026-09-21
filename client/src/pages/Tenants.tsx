@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type Property, type TenantRow } from "../api";
 import { Badge, Card, Empty, inputCls, Money, PageTitle } from "../ui";
-import { useT, type Key } from "../i18n";
+import { useT } from "../i18n";
 import { PaymentControl } from "./Statements";
+import { DataTable, type Column } from "../table";
 
 export default function Tenants({ properties, select }: { properties: Property[]; select: (id: number) => void }) {
   const t = useT();
@@ -39,30 +40,19 @@ export default function Tenants({ properties, select }: { properties: Property[]
             <select className={inputCls + " !w-auto"} value={building} onChange={(e) => setBuilding(e.target.value)}><option value="">{t("tn.allBuildings")}</option>{properties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
             <select className={inputCls + " !w-auto"} value={status} onChange={(e) => setStatus(e.target.value)}><option value="">{t("tn.status.all")}</option><option value="open">{t("tn.status.open")}</option><option value="settled">{t("tn.status.settled")}</option></select>
           </div>
-          <Card className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-sm">
-              <thead className="text-left text-xs text-mute"><tr>
-                <th className="px-4 py-2.5 font-medium">{t("tn.th.name")}</th><th className="px-4 py-2.5 font-medium">{t("tn.th.where")}</th><th className="px-4 py-2.5 font-medium">{t("tn.th.period")}</th>
-                <th className="px-4 py-2.5 text-right font-medium">{t("tn.th.prepay")}</th><th className="px-4 py-2.5 text-right font-medium">{t("tn.th.statement")}</th><th className="px-4 py-2.5 font-medium">{t("tn.th.payment")}</th><th className="px-4 py-2.5 font-medium">{t("tn.th.portal")}</th></tr></thead>
-              <tbody className="divide-y divide-line">
-                {filtered.map((r) => (
-                  <tr key={r.id} className="hover:bg-surface/60">
-                    <td className="px-4 py-3"><div className="font-semibold">{r.name}</div><div className="text-xs text-mute">{r.email}</div>{r.lease_rules && <Badge tone={r.lease.confirmed ? "green" : "red"}>{r.lease.confirmed ? t("lease.confirmed") : t("lease.unconfirmed")}</Badge>}</td>
-                    <td className="px-4 py-3"><button className="font-medium text-cobalt hover:underline" onClick={() => select(r.property_id)} title={t("tn.goto")}>{r.property_name}</button><div className="text-xs text-mute">{r.unit_label}</div></td>
-                    <td className="num px-4 py-3 text-xs text-mute">{r.move_in ? t("tn.since", { d: r.move_in }) : "—"}{r.move_out && <div>{t("tn.until", { d: r.move_out })}</div>}</td>
-                    <td className="num px-4 py-3 text-right"><Money cents={r.monthly_prepayment_cents} /><span className="text-xs text-mute">/{t("common.month")}</span></td>
-                    <td className="num px-4 py-3 text-right">{r.latest ? <><Money cents={r.latest.balance_cents} signed /><div className="text-xs text-mute">{r.latest.year}{r.latest.sent_at ? ` · ${t("s.sentOn", { d: r.latest.sent_at.slice(0, 10) })}` : ` · ${t("s.notSent")}`}</div></> : <span className="text-xs text-mute">{t("tn.none")}</span>}</td>
-                    <td className="px-4 py-3">{r.latest && r.latest.balance_cents !== 0 ? <PaymentControl sid={r.latest.id} balance={r.latest.balance_cents} status={r.latest.payment_status} paidAt={r.latest.paid_at} onChange={load} compact /> : <span className="text-xs text-mute">—</span>}</td>
-                    <td className="px-4 py-3"><Badge tone={r.registered ? "green" : "amber"}>{r.registered ? t("b.tenant.registered") : t("b.tenant.notRegistered")}</Badge></td>
-                  </tr>
-                ))}
-                {filtered.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-mute">{t("d.noMatch")}</td></tr>}
-              </tbody>
-            </table>
+          <Card>
+            <DataTable<TenantRow> rows={filtered} rowKey={(r) => r.id} minWidth={960} defaultSort={{ key: "where", dir: 1 }} emptyText={t("d.noMatch")} columns={[
+              { key: "name", label: t("tn.th.name"), sort: (r) => r.name, render: (r) => <><div className="font-semibold">{r.name}</div><div className="text-xs text-mute">{r.email}</div>{r.lease_rules && <Badge tone={r.lease.confirmed ? "green" : "red"}>{r.lease.confirmed ? t("lease.confirmed") : t("lease.unconfirmed")}</Badge>}</> },
+              { key: "where", label: t("tn.th.where"), sort: (r) => `${r.property_name} ${r.unit_label}`, render: (r) => <><button className="font-medium text-cobalt hover:underline" onClick={() => select(r.property_id)} title={t("tn.goto")}>{r.property_name}</button><div className="text-xs text-mute">{r.unit_label}</div></> },
+              { key: "period", label: t("tn.th.period"), sort: (r) => r.move_in ?? "", nowrap: true, render: (r) => <span className="num text-xs text-mute">{r.move_in ? t("tn.since", { d: r.move_in }) : "—"}{r.move_out && <div>{t("tn.until", { d: r.move_out })}</div>}</span> },
+              { key: "prepay", label: t("tn.th.prepay"), align: "right", sort: (r) => r.monthly_prepayment_cents, render: (r) => <><Money cents={r.monthly_prepayment_cents} /><span className="text-xs text-mute">/{t("common.month")}</span></> },
+              { key: "statement", label: t("tn.th.statement"), align: "right", sort: (r) => r.latest?.balance_cents ?? null, render: (r) => r.latest ? <><Money cents={r.latest.balance_cents} signed /><div className="text-xs text-mute">{r.latest.year}{r.latest.sent_at ? ` · ${t("s.sentOn", { d: r.latest.sent_at.slice(0, 10) })}` : ` · ${t("s.notSent")}`}</div></> : <span className="text-xs text-mute">{t("tn.none")}</span> },
+              { key: "payment", label: t("tn.th.payment"), sort: (r) => r.latest?.payment_status ?? "", render: (r) => r.latest && r.latest.balance_cents !== 0 ? <PaymentControl sid={r.latest.id} balance={r.latest.balance_cents} status={r.latest.payment_status} paidAt={r.latest.paid_at} onChange={load} compact /> : <span className="text-xs text-mute">—</span> },
+              { key: "portal", label: t("tn.th.portal"), sort: (r) => (r.registered ? 1 : 0), render: (r) => <Badge tone={r.registered ? "green" : "amber"}>{r.registered ? t("b.tenant.registered") : t("b.tenant.notRegistered")}</Badge> },
+            ] satisfies Column<TenantRow>[]} />
           </Card>
         </>
       )}
-      <span className="hidden">{t("pay.open" as Key)}</span>
     </>
   );
 }
