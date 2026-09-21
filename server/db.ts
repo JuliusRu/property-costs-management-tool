@@ -10,7 +10,9 @@ export const db = new DatabaseSync(path.join(DATA_DIR, "app.db"));
 db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
 
 // Allocation keys according to German BetrKV practice.
-export type AllocationKey = "area" | "persons" | "units" | "heating" | "water";
+export type AllocationKey = "area" | "mea" | "persons" | "units" | "heating" | "water";
+// Which units take part in a cost: every unit, apartments only (e.g. waste when the shop has its own bins), commercial only.
+export type Pool = "all" | "residential" | "commercial";
 
 // § 2 BetrKV catalogue (numbers in comments = § 2 Nr.)
 export const CATEGORIES = [
@@ -85,6 +87,7 @@ CREATE TABLE IF NOT EXISTS units (
   label TEXT NOT NULL,
   unit_type TEXT NOT NULL DEFAULT 'residential',
   area_sqm REAL NOT NULL,
+  mea REAL NOT NULL DEFAULT 0,
   persons INTEGER NOT NULL DEFAULT 1,
   heating_kwh REAL NOT NULL DEFAULT 0,
   water_m3 REAL NOT NULL DEFAULT 0
@@ -113,6 +116,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   period_start TEXT NOT NULL,
   period_end TEXT NOT NULL,
   allocation_key TEXT NOT NULL,
+  pool TEXT NOT NULL DEFAULT 'all',
   allocable INTEGER NOT NULL DEFAULT 1,
   non_allocable_cents INTEGER NOT NULL DEFAULT 0,
   non_allocable_reason TEXT,
@@ -189,7 +193,9 @@ for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE 
   "ALTER TABLE statements ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'open'",
   "ALTER TABLE statements ADD COLUMN paid_at TEXT",
   "ALTER TABLE statements ADD COLUMN paid_cents INTEGER",
-  "ALTER TABLE statements ADD COLUMN payment_note TEXT"]) {
+  "ALTER TABLE statements ADD COLUMN payment_note TEXT",
+  "ALTER TABLE units ADD COLUMN mea REAL NOT NULL DEFAULT 0",
+  "ALTER TABLE invoices ADD COLUMN pool TEXT NOT NULL DEFAULT 'all'"]) {
   try { db.exec(stmt); } catch { /* column exists */ }
 }
 
@@ -206,7 +212,7 @@ for (const row of db.prepare("SELECT id FROM tenants WHERE access_code IS NULL")
 export type Property = { id: number; name: string; address: string; country: string; settings_json: string };
 export type UnitType = "residential" | "commercial" | "garage";
 export type Unit = {
-  id: number; property_id: number; label: string; unit_type: UnitType; area_sqm: number;
+  id: number; property_id: number; label: string; unit_type: UnitType; area_sqm: number; mea: number;
   persons: number; heating_kwh: number; water_m3: number;
 };
 export type Tenant = {
@@ -232,7 +238,7 @@ export function leaseOf(t: Tenant): LeaseRules {
 export type Invoice = {
   id: number; property_id: number; unit_id: number | null; provider: string; category: Category;
   description: string | null; amount_cents: number; period_start: string;
-  period_end: string; allocation_key: AllocationKey; allocable: number;
+  period_end: string; allocation_key: AllocationKey; pool: Pool; allocable: number;
   non_allocable_cents: number; non_allocable_reason: string | null;
   co2_cents: number; energy_kwh: number;
   source: string; file_name: string | null; ai_confidence: number | null;

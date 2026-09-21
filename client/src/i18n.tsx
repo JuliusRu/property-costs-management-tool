@@ -210,7 +210,15 @@ const dict = {
 
   // keys & categories
   "key.area": ["by living area (m²)", "nach Wohnfläche (m²)"],
+  "key.mea": ["by co-ownership shares (MEA)", "nach Miteigentumsanteilen (MEA)"],
   "key.persons": ["by persons", "nach Personen"],
+  "pool.all": ["all units", "alle Einheiten"],
+  "pool.residential": ["apartments only", "nur Wohnungen"],
+  "pool.commercial": ["commercial only", "nur Gewerbe"],
+  "i.f.pool": ["Cost pool", "Kostenpool"],
+  "i.f.pool.hint": ["Who takes part in this cost. Example: waste for apartments only when the restaurant has its own bins.", "Wer an dieser Kostenart teilnimmt. Beispiel: Müll nur Wohnungen, wenn die Gaststätte eigene Tonnen hat."],
+  "b.unit.mea": ["Co-ownership shares (MEA)", "Miteigentumsanteile (MEA)"],
+  "b.unit.mea.hint": ["From the declaration of division, e.g. 101,720 of 1.000. Leave 0 if you allocate by area.", "Aus der Teilungserklärung, z. B. 101,720 von 1.000. 0 lassen, wenn du nach Fläche umlegst."],
   "key.units": ["equally per unit", "je Einheit gleich"],
   "key.heating": ["heating: 30 % area / 70 % kWh (HeizkostenV)", "Heizung: 30 % Fläche / 70 % kWh (HeizkostenV)"],
   "key.water": ["by water m³", "nach Wasser m³"],

@@ -5,15 +5,15 @@ import { DEFAULT_SETTINGS } from "../db.js";
 import type { Invoice, Tenant, Unit } from "../db.js";
 
 const units: Unit[] = [
-  { id: 1, property_id: 1, label: "A", unit_type: "residential", area_sqm: 58, persons: 1, heating_kwh: 4100, water_m3: 38 },
-  { id: 2, property_id: 1, label: "B", unit_type: "residential", area_sqm: 74, persons: 2, heating_kwh: 6300, water_m3: 71 },
-  { id: 3, property_id: 1, label: "C", unit_type: "residential", area_sqm: 46, persons: 1, heating_kwh: 3900, water_m3: 34 },
+  { id: 1, property_id: 1, label: "A", unit_type: "residential", area_sqm: 58, mea: 0, persons: 1, heating_kwh: 4100, water_m3: 38 },
+  { id: 2, property_id: 1, label: "B", unit_type: "residential", area_sqm: 74, mea: 0, persons: 2, heating_kwh: 6300, water_m3: 71 },
+  { id: 3, property_id: 1, label: "C", unit_type: "residential", area_sqm: 46, mea: 0, persons: 1, heating_kwh: 3900, water_m3: 34 },
 ];
 const tenant = (id: number, unit_id: number, move_in: string | null = null, move_out: string | null = null): Tenant =>
   ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id), access_code: "TESTCODE", lease_json: "{}", password_hash: null, registered_at: null });
 const inv = (id: number, amount_cents: number, allocation_key: Invoice["allocation_key"], extra: Partial<Invoice> = {}): Invoice =>
   ({ id, property_id: 1, unit_id: null, provider: "P", category: "other", description: null, amount_cents, period_start: "2025-01-01", period_end: "2025-12-31",
-    allocation_key, allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, co2_cents: 0, energy_kwh: 0, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
+    allocation_key, pool: "all", allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, co2_cents: 0, energy_kwh: 0, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
 
 test("largest-remainder split always sums to the total", () => {
   for (const total of [1, 2, 100, 98400, 12345]) {
@@ -152,7 +152,7 @@ test("consumption share is configurable within 50–70 % and § 11 exemption all
 });
 
 test("garages take no part in persons- or consumption-based costs", () => {
-  const withGarage: Unit[] = [...units, { id: 9, property_id: 1, label: "G", unit_type: "garage", area_sqm: 15, persons: 0, heating_kwh: 0, water_m3: 0 }];
+  const withGarage: Unit[] = [...units, { id: 9, property_id: 1, label: "G", unit_type: "garage", area_sqm: 15, mea: 0, persons: 0, heating_kwh: 0, water_m3: 0 }];
   const all = [tenant(1, 1), tenant(2, 2), tenant(3, 3), tenant(9, 9)];
   const waste = computeStatements(withGarage, all, [inv(1, 40000, "persons", { category: "waste" })], 2025);
   assert.equal(waste.statements[3].total_cents, 0);
@@ -201,4 +201,40 @@ test("invoice addressed to one unit goes 100 % to that unit, day-exact", () => {
   assert.equal(statements[1].total_cents, 0);
   assert.equal(statements[2].total_cents + summary.owner_vacancy_cents, 12000);
   assert.match(statements[2].lines[0].formula, /directly for C/);
+});
+
+// The Munich example: 525,970 MEA in total, the flat has 101,720, the restaurant 98,000 and takes no part in waste.
+test("MEA key with an apartments-only pool reproduces the Munich statement", () => {
+  const muc: Unit[] = [
+    { id: 11, property_id: 2, label: "1-Wohnung", unit_type: "residential", area_sqm: 70, mea: 110.5, persons: 2, heating_kwh: 0, water_m3: 0 },
+    { id: 12, property_id: 2, label: "2-Wohnung", unit_type: "residential", area_sqm: 68, mea: 108.25, persons: 2, heating_kwh: 0, water_m3: 0 },
+    { id: 13, property_id: 2, label: "3-Wohnung", unit_type: "residential", area_sqm: 67, mea: 107.5, persons: 1, heating_kwh: 0, water_m3: 0 },
+    { id: 14, property_id: 2, label: "5-Wohnung", unit_type: "residential", area_sqm: 64, mea: 101.72, persons: 1, heating_kwh: 0, water_m3: 0 },
+    { id: 15, property_id: 2, label: "Gaststätte", unit_type: "commercial", area_sqm: 120, mea: 98, persons: 0, heating_kwh: 0, water_m3: 0 },
+  ];
+  const all = muc.map((u) => tenant(u.id, u.id));
+  const inv2 = (id: number, amount: number, extra: Partial<Invoice> = {}) => inv(id, amount, "mea", { property_id: 2, ...extra });
+  const { statements, summary } = computeStatements(muc, all, [
+    inv2(1, 502656, { category: "caretaker" }), inv2(2, 131977, { category: "insurance" }), inv2(3, 51325, { category: "insurance" }), inv2(4, 60702, { category: "insurance" }),
+    inv2(5, 68445, { category: "waste", pool: "residential" }), inv2(6, 58124, { category: "street_cleaning" }), inv2(7, 35046, { category: "rainwater" }), inv2(8, 41930, { category: "lighting" }),
+    inv2(9, 19243, { category: "water_sewage", unit_id: 14 }), inv2(10, 19295, { category: "water_sewage", unit_id: 14 }),
+  ], 2025);
+  const flat = statements.find((s) => s.unit.id === 14)!;
+  const share = (cat: string, desc?: number) => flat.lines.filter((l) => l.category === cat).map((l) => l.share_cents)[desc ?? 0];
+  assert.equal(share("caretaker"), 97211);
+  assert.equal(share("waste"), 16268);          // 684,45 × 101,720 / 427,970
+  assert.equal(share("street_cleaning"), 11241);
+  assert.ok(Math.abs(share("rainwater") - 6778) <= 1); // 67,78 by plain rounding; largest-remainder may move one cent so the building sums exactly
+  assert.equal(share("lighting"), 8109);
+  assert.equal(share("water_sewage", 0) + share("water_sewage", 1), 19243 + 19295);
+  assert.match(flat.lines.find((l) => l.category === "waste")!.formula, /427.97 MEA \(apartments only\)/);
+  const shop = statements.find((s) => s.unit.id === 15)!;
+  assert.equal(shop.lines.filter((l) => l.category === "waste").length, 0);
+  assert.equal(summary.rounding_cents, 0);
+});
+
+test("credit notes (negative amounts) are split like costs", () => {
+  const { statements, summary } = computeStatements(units, [tenant(1, 1), tenant(2, 2), tenant(3, 3)], [inv(1, -3595, "units", { category: "other" })], 2025);
+  assert.equal(statements.reduce((s, x) => s + x.total_cents, 0), -3595);
+  assert.equal(summary.rounding_cents, 0);
 });

@@ -6,7 +6,7 @@ export const eur = (cents: number) =>
   (cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 
 const KEY_LABEL: Record<string, string> = {
-  area: "nach Wohnfläche (m²)", persons: "nach Personen", units: "je Einheit",
+  area: "nach Wohnfläche (m²)", mea: "nach Miteigentumsanteilen", persons: "nach Personen", units: "je Einheit",
   heating: "Heizung: Grundkosten nach Fläche, Verbrauch nach kWh (HeizkostenV)", water: "nach Wasserverbrauch (m³)",
 };
 

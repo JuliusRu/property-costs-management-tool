@@ -195,8 +195,8 @@ app.post("/api/properties/:id/units", (req, res) => {
   const b = req.body ?? {};
   if (!b.label) return res.status(400).json({ error: "label missing" });
   const ut = ["residential", "commercial", "garage"].includes(b.unit_type) ? b.unit_type : "residential";
-  const r = db.prepare("INSERT INTO units (property_id, label, unit_type, area_sqm, persons, heating_kwh, water_m3) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(num(req.params.id), String(b.label).slice(0, 60), ut, numOr(b.area_sqm, 0), numOr(b.persons, 1), numOr(b.heating_kwh, 0), numOr(b.water_m3, 0));
+  const r = db.prepare("INSERT INTO units (property_id, label, unit_type, area_sqm, mea, persons, heating_kwh, water_m3) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(num(req.params.id), String(b.label).slice(0, 60), ut, numOr(b.area_sqm, 0), numOr(b.mea, 0), numOr(b.persons, 1), numOr(b.heating_kwh, 0), numOr(b.water_m3, 0));
   res.status(201).json(q.unit(Number(r.lastInsertRowid)));
 });
 app.patch("/api/units/:id", (req, res) => {
@@ -204,8 +204,8 @@ app.patch("/api/units/:id", (req, res) => {
   if (!u) return res.status(404).end();
   const b = req.body ?? {};
   const ut = ["residential", "commercial", "garage"].includes(b.unit_type) ? b.unit_type : u.unit_type;
-  db.prepare("UPDATE units SET label = ?, unit_type = ?, area_sqm = ?, persons = ?, heating_kwh = ?, water_m3 = ? WHERE id = ?")
-    .run(String(b.label ?? u.label).slice(0, 60), ut, numOr(b.area_sqm, u.area_sqm), numOr(b.persons, u.persons), numOr(b.heating_kwh, u.heating_kwh), numOr(b.water_m3, u.water_m3), u.id);
+  db.prepare("UPDATE units SET label = ?, unit_type = ?, area_sqm = ?, mea = ?, persons = ?, heating_kwh = ?, water_m3 = ? WHERE id = ?")
+    .run(String(b.label ?? u.label).slice(0, 60), ut, numOr(b.area_sqm, u.area_sqm), numOr(b.mea, u.mea), numOr(b.persons, u.persons), numOr(b.heating_kwh, u.heating_kwh), numOr(b.water_m3, u.water_m3), u.id);
   res.json(q.unit(u.id));
 });
 app.delete("/api/units/:id", (req, res) => { db.prepare("DELETE FROM units WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
@@ -293,19 +293,20 @@ app.get("/api/properties/:id/invoices", (req, res) => {
 
 function insertInvoice(propertyId: number, b: Record<string, unknown>) {
   const category = (CATEGORIES as readonly string[]).includes(String(b.category)) ? (b.category as Category) : "other";
-  const keys: AllocationKey[] = ["area", "persons", "units", "heating", "water"];
+  const keys: AllocationKey[] = ["area", "mea", "persons", "units", "heating", "water"];
   const key = keys.includes(b.allocation_key as AllocationKey) ? (b.allocation_key as AllocationKey) : DEFAULT_KEY[category];
+  const pool = ["all", "residential", "commercial"].includes(b.pool as string) ? (b.pool as string) : "all";
   const amount = Math.round(Number(b.amount_cents));
-  if (!Number.isFinite(amount) || amount < 0) throw new Error("amount_cents invalid");
+  if (!Number.isFinite(amount)) throw new Error("amount_cents invalid"); // negative = credit note
   for (const d of [b.period_start, b.period_end]) if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) throw new Error("period invalid");
   const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? 0)) || 0));
   const unitId = b.unit_id ? num(b.unit_id) : null;
   if (unitId && q.unit(unitId)?.property_id !== propertyId) throw new Error("unit does not belong to this building");
   const r = db.prepare(
-    `INSERT INTO invoices (property_id, unit_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, allocable, non_allocable_cents, non_allocable_reason, co2_cents, energy_kwh, source, file_name, ai_confidence, ai_notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO invoices (property_id, unit_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, pool, allocable, non_allocable_cents, non_allocable_reason, co2_cents, energy_kwh, source, file_name, ai_confidence, ai_notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(propertyId, unitId, String(b.provider ?? "").slice(0, 120), category, String(b.description ?? "").slice(0, 200), amount,
-    String(b.period_start), String(b.period_end), key, b.allocable === false ? 0 : 1, nonAlloc, b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null,
+    String(b.period_start), String(b.period_end), key, pool, b.allocable === false ? 0 : 1, nonAlloc, b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null,
     Math.max(0, Math.round(Number(b.co2_cents ?? 0)) || 0), Math.max(0, Number(b.energy_kwh ?? 0) || 0),
     String(b.source ?? "manual"), b.file_name ? String(b.file_name) : null, b.ai_confidence == null ? null : Number(b.ai_confidence), b.ai_notes ? String(b.ai_notes) : null);
   return q.invoice(Number(r.lastInsertRowid));
@@ -320,16 +321,17 @@ app.patch("/api/invoices/:id", (req, res) => {
   if (!inv) return res.status(404).end();
   const b = req.body ?? {};
   const category = (CATEGORIES as readonly string[]).includes(b.category) ? b.category : inv.category;
-  const keys = ["area", "persons", "units", "heating", "water"];
+  const keys = ["area", "mea", "persons", "units", "heating", "water"];
   const key = keys.includes(b.allocation_key) ? b.allocation_key : inv.allocation_key;
+  const pool = ["all", "residential", "commercial"].includes(b.pool) ? b.pool : inv.pool;
   const amount = Math.round(Number(b.amount_cents ?? inv.amount_cents));
   const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? inv.non_allocable_cents)) || 0));
   const unitId = "unit_id" in b ? (b.unit_id ? num(b.unit_id) : null) : inv.unit_id;
   if (unitId && q.unit(unitId)?.property_id !== inv.property_id) return res.status(400).json({ error: "unit does not belong to this building" });
-  db.prepare(`UPDATE invoices SET unit_id=?, provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, allocable=?, non_allocable_cents=?, non_allocable_reason=?, co2_cents=?, energy_kwh=? WHERE id=?`)
+  db.prepare(`UPDATE invoices SET unit_id=?, provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, pool=?, allocable=?, non_allocable_cents=?, non_allocable_reason=?, co2_cents=?, energy_kwh=? WHERE id=?`)
     .run(unitId, String(b.provider ?? inv.provider).slice(0, 120), category, String(b.description ?? inv.description ?? "").slice(0, 200),
       amount, String(b.period_start ?? inv.period_start), String(b.period_end ?? inv.period_end),
-      key, b.allocable === undefined ? inv.allocable : (b.allocable ? 1 : 0), nonAlloc,
+      key, pool, b.allocable === undefined ? inv.allocable : (b.allocable ? 1 : 0), nonAlloc,
       b.non_allocable_reason === undefined ? inv.non_allocable_reason : (b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null),
       b.co2_cents === undefined ? inv.co2_cents : Math.max(0, Math.round(Number(b.co2_cents)) || 0),
       b.energy_kwh === undefined ? inv.energy_kwh : Math.max(0, Number(b.energy_kwh) || 0), inv.id);

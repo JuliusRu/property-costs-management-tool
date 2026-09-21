@@ -52,19 +52,22 @@ export function co2LandlordShare(kgPerSqm: number): number {
   return 0.95;
 }
 
-/** Which units take part in a cost category. Garages have no persons, water or heating; commercial units take part in everything (Vorwegabzug is a manual rule for now). */
-export function participates(unit: Unit, category: string): boolean {
+/** Which units take part in a cost. The invoice's pool decides (all / apartments only / commercial only); garages never carry persons, water or heating. */
+export function participates(unit: Unit, category: string, pool: string = "all"): boolean {
+  if (pool === "residential" && unit.unit_type !== "residential") return false;
+  if (pool === "commercial" && unit.unit_type !== "commercial") return false;
   if (unit.unit_type === "garage") return ["property_tax", "insurance", "rainwater", "street_cleaning", "lighting"].includes(category);
   return true;
 }
 
-const KEY_UNIT: Record<AllocationKey, string> = { area: "m²", persons: "persons", units: "unit", heating: "kWh", water: "m³" };
+const KEY_UNIT: Record<AllocationKey, string> = { area: "m²", mea: "MEA", persons: "persons", units: "unit", heating: "kWh", water: "m³" };
 // Consumption-based keys are already tenant-specific — they are not time-prorated.
-const TIME_PRORATED: Record<AllocationKey, boolean> = { area: true, persons: true, units: true, heating: false, water: false };
+const TIME_PRORATED: Record<AllocationKey, boolean> = { area: true, mea: true, persons: true, units: true, heating: false, water: false };
 
 export function basis(unit: Unit, key: AllocationKey): number {
   switch (key) {
     case "area": return unit.area_sqm;
+    case "mea": return unit.mea;
     case "persons": return unit.persons;
     case "units": return 1;
     case "heating": return unit.heating_kwh;
@@ -109,6 +112,7 @@ function periodMonths(periodStart: string, periodEnd: string): number {
 export function splitCents(total: number, weights: number[]): number[] {
   const sum = weights.reduce((a, b) => a + b, 0);
   if (sum === 0) return weights.map(() => 0);
+  if (total < 0) return splitCents(-total, weights).map((v) => -v); // credits (e.g. a refund from the cable provider) split the same way
   const raw = weights.map((w) => (total * w) / sum);
   const out = raw.map(Math.floor);
   let rest = total - out.reduce((a, b) => a + b, 0);
@@ -161,10 +165,13 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     invoiced += yearAmount;
     if (pm !== months) checks.push({ level: "INFO", code: "PRORATED", message: `${inv.provider} (${inv.description ?? inv.category}) covers ${pm} months; ${months} of them fall into ${year} → ${eur(yearAmount)} of ${eur(inv.amount_cents)} used.` });
     if (!inv.allocable) { nonAllocable += yearAmount; continue; }
-    let excluded = Math.min(yearAmount, Math.round(((inv.non_allocable_cents ?? 0) * months) / pm));
+    // Credits (negative amounts) are passed on in full; exclusions only make sense on costs.
+    const clampExcl = (x: number) => (yearAmount >= 0 ? Math.min(yearAmount, x) : 0);
+    let excluded = clampExcl(Math.round(((inv.non_allocable_cents ?? 0) * months) / pm));
 
     // TKG § 72: cable/antenna costs are no longer allocable for periods from 1 July 2024.
-    if (inv.category === "cable" && inv.period_end >= "2024-07-01") {
+    // (a credit note from the cable provider is passed on — the tenants paid those costs before)
+    if (inv.category === "cable" && inv.period_end >= "2024-07-01" && yearAmount > 0) {
       if (inv.period_start >= "2024-07-01") {
         excluded = yearAmount;
         checks.push({ level: "WARNING", code: "CABLE_NOT_ALLOCABLE", message: `${inv.provider}: cable/TV costs are not allocable since 1 July 2024 (end of the Nebenkostenprivileg) — ${eur(yearAmount)} booked to you.`, hint: "Tenants contract their own TV/internet. Remove the invoice or keep it as owner cost." });
@@ -185,7 +192,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
         const perSqm = kg / heatedArea;
         const landlordShare = co2LandlordShare(perSqm);
         const landlordCents = Math.round(inv.co2_cents * landlordShare);
-        excluded = Math.min(yearAmount, excluded + landlordCents);
+        excluded = clampExcl(excluded + landlordCents);
         co2Landlord += landlordCents;
         checks.push({ level: "INFO", code: "CO2_SPLIT", message: `CO₂ costs ${eur(inv.co2_cents)} (${inv.provider}): ${Math.round(kg)} kg CO₂ / ${heatedArea} m² = ${perSqm.toFixed(1)} kg/m² → landlord share ${pct(landlordShare)} = ${eur(landlordCents)} (CO2KostAufG § 7).` });
       } else if (factor === 0) {
@@ -197,13 +204,14 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     nonAllocable += excluded;
     const allocableAmount = yearAmount - excluded;
     allocable += allocableAmount;
+    if (allocableAmount === 0) continue; // fully excluded → nothing to distribute, no empty lines
 
     const comps = componentsOf(inv, allocableAmount);
     const acc = new Map<number, { share: number; days: number; parts: string[] }>();
     let ok = true;
     for (const c of comps) {
       // Invoice addressed to one unit → 100 % to that unit (still day-exact by occupancy); otherwise by key across the pool.
-      const bases = inv.unit_id ? units.map((u) => (u.id === inv.unit_id ? 1 : 0)) : units.map((u) => (participates(u, inv.category) ? basis(u, c.key) : 0));
+      const bases = inv.unit_id ? units.map((u) => (u.id === inv.unit_id ? 1 : 0)) : units.map((u) => (participates(u, inv.category, inv.pool) ? basis(u, c.key) : 0));
       const basisTotal = bases.reduce((s, b) => s + b, 0);
       if (basisTotal === 0) { checks.push(inv.unit_id ? { level: "BLOCKER", code: "NO_UNIT", message: `${inv.provider}: the unit this invoice is addressed to no longer exists.`, hint: "Assign the invoice to a unit or to the whole building." } : { level: "BLOCKER", code: "NO_BASIS", message: `${inv.provider}: allocation key "${c.key}" has no data on any unit.`, hint: "Enter the values on the units or choose a different key." }); ok = false; break; }
       const unitShares = splitCents(c.amount, bases);
@@ -220,7 +228,8 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
           let share = parts[j];
           const lease = leases.get(t.id)!;
           const prefix = c.label ? `${c.label}: ` : "";
-          let f = inv.unit_id ? `${prefix}${eur(c.amount)} directly for ${u.label} = ${eur(unitShare)}` : `${prefix}${eur(c.amount)} × ${bases[i]} ${KEY_UNIT[c.key]} / ${basisTotal} ${KEY_UNIT[c.key]} = ${eur(unitShare)}`;
+          const poolNote = inv.pool === "residential" ? " (apartments only)" : inv.pool === "commercial" ? " (commercial only)" : "";
+          let f = inv.unit_id ? `${prefix}${eur(c.amount)} directly for ${u.label} = ${eur(unitShare)}` : `${prefix}${eur(c.amount)} × ${bases[i]} ${KEY_UNIT[c.key]} / ${basisTotal} ${KEY_UNIT[c.key]}${poolNote} = ${eur(unitShare)}`;
           if (c.prorated && days !== diy) f += ` × ${days}/${diy} days = ${eur(share)}`;
           // Lease rules rank above the building default. Whatever the lease shifts is the landlord's gain or loss.
           const cat = inv.category as Category;
@@ -230,7 +239,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
             share = 0;
           } else if (!inv.unit_id && lease.key_overrides[cat] && lease.key_overrides[cat] !== c.key && !(inv.allocation_key === "heating" && !settings.heizkv_exempt)) {
             const k2 = lease.key_overrides[cat]!;
-            const b2 = units.map((x) => (participates(x, inv.category) ? basis(x, k2) : 0));
+            const b2 = units.map((x) => (participates(x, inv.category, inv.pool) ? basis(x, k2) : 0));
             const tot2 = b2.reduce((a, b) => a + b, 0);
             if (tot2 > 0) {
               const unitShare2 = Math.round((c.amount * b2[i]) / tot2);
@@ -252,6 +261,8 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
       const a = acc.get(t.id);
       if (!a) continue;
       if (inv.unit_id && t.unit_id !== inv.unit_id) continue; // a unit invoice only appears on that unit's statement
+      const tu = units.find((u) => u.id === t.unit_id);
+      if (!inv.unit_id && tu && !participates(tu, inv.category, inv.pool)) continue; // outside the cost pool → no line
       const formula = a.parts.length > 1 ? `${a.parts.join("; ")} → ${eur(a.share)}` : a.parts[0];
       const total = comps.reduce((s, c) => s + c.amount, 0);
       const excludedNote = excluded > 0 ? ` (${eur(excluded)} not allocable excluded)` : "";

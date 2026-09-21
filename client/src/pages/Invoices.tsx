@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, CATEGORIES, KEYS, type Extraction, type Invoice, type Property } from "../api";
+import { api, CATEGORIES, KEYS, POOLS, type Extraction, type Invoice, type Pool, type Property } from "../api";
 import { Badge, Button, Card, Empty, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
 
@@ -132,6 +132,7 @@ function Row({ inv, units, onEdit, onChange }: { inv: Invoice; units: Property["
         <select className="max-w-[220px] rounded-md border border-line px-2 py-1 text-xs" value={inv.allocation_key} disabled={!!inv.unit_id} onChange={(e) => change(e.target.value)}>
           {KEYS.map((k) => <option key={k} value={k}>{t(`key.${k}`)}</option>)}
         </select>
+        {!inv.unit_id && inv.pool !== "all" && <div className="mt-1 text-xs text-cobalt-deep">{t(`pool.${inv.pool}`)}</div>}
       </td>
       <td className="px-5 py-3">
         <Badge tone={tone[src]}>{t(`i.src.${src}`)}</Badge>
@@ -160,7 +161,8 @@ export function InvoiceForm({ title, sub, initial, units, onClose, onSave, onDel
           </select>
         </Field></div>}
         <Field label={t("i.f.category")}><select className={inputCls} value={e.category} onChange={(ev) => set("category", ev.target.value)}>{CATEGORIES.map((k) => <option key={k} value={k}>{t(`cat.${k}`)}</option>)}</select></Field>
-        <Field label={t("i.f.key")}><select className={inputCls} value={e.allocation_key} onChange={(ev) => set("allocation_key", ev.target.value)}>{KEYS.map((k) => <option key={k} value={k}>{t(`key.${k}`)}</option>)}</select></Field>
+        <Field label={t("i.f.key")}><select className={inputCls} value={e.allocation_key} disabled={!!e.unit_id} onChange={(ev) => set("allocation_key", ev.target.value)}>{KEYS.map((k) => <option key={k} value={k}>{t(`key.${k}`)}</option>)}</select></Field>
+        {!e.unit_id && <div className="col-span-2"><Field label={t("i.f.pool")} hint={t("i.f.pool.hint")}><select className={inputCls} value={e.pool ?? "all"} onChange={(ev) => set("pool", ev.target.value as Pool)}>{POOLS.map((p) => <option key={p} value={p}>{t(`pool.${p}`)}</option>)}</select></Field></div>}
         <Field label={t("i.f.start")}><input className={inputCls} type="date" value={e.period_start} onChange={(ev) => set("period_start", ev.target.value)} /></Field>
         <Field label={t("i.f.end")}><input className={inputCls} type="date" value={e.period_end} onChange={(ev) => set("period_end", ev.target.value)} /></Field>
         <div className="col-span-2"><Field label={t("i.f.desc")}><input className={inputCls} value={e.description} onChange={(ev) => set("description", ev.target.value)} /></Field></div>

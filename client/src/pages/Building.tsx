@@ -51,7 +51,7 @@ export default function Building({ property, onChange }: { property: Property; o
                   <tr key={`${u.id}-${x?.id ?? "v"}`} className={!x ? "bg-sun-soft/40" : ""}>
                     {i === 0 && <td className="px-5 py-3 align-top" rowSpan={rows.length}>
                       <button className="text-left font-semibold hover:text-cobalt" onClick={() => setEditUnit(u)}>{u.label}</button> {u.unit_type !== "residential" && <Badge>{t(`unit.${u.unit_type}` as Key)}</Badge>}
-                      <div className="text-xs text-mute">{u.area_sqm} m² · {u.persons} {u.persons === 1 ? t("common.person") : t("common.persons")}</div>
+                      <div className="text-xs text-mute">{u.area_sqm} m² · {u.persons} {u.persons === 1 ? t("common.person") : t("common.persons")}{u.mea > 0 && <> · {u.mea.toLocaleString("de-DE", { minimumFractionDigits: 3 })} MEA</>}</div>
                       <div className="text-xs text-mute">{u.heating_kwh.toLocaleString("de-DE")} kWh · {u.water_m3} m³</div>
                     </td>}
                     <td className="px-5 py-3 align-top">
@@ -166,7 +166,7 @@ function hasRules(l: Lease | undefined): boolean {
 
 function UnitModal({ unit, propertyId, onClose, onSaved }: { unit: Partial<Unit>; propertyId: number; onClose: () => void; onSaved: () => void }) {
   const t = useT();
-  const [f, setF] = useState({ label: unit.label ?? "", unit_type: (unit.unit_type ?? "residential") as UnitType, area_sqm: unit.area_sqm ?? 0, persons: unit.persons ?? 1, heating_kwh: unit.heating_kwh ?? 0, water_m3: unit.water_m3 ?? 0 });
+  const [f, setF] = useState({ label: unit.label ?? "", unit_type: (unit.unit_type ?? "residential") as UnitType, area_sqm: unit.area_sqm ?? 0, mea: unit.mea ?? 0, persons: unit.persons ?? 1, heating_kwh: unit.heating_kwh ?? 0, water_m3: unit.water_m3 ?? 0 });
   const [busy, setBusy] = useState(false);
   const n = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: k === "label" ? e.target.value : Number(e.target.value) });
   return (
@@ -175,6 +175,7 @@ function UnitModal({ unit, propertyId, onClose, onSaved }: { unit: Partial<Unit>
         <Field label={t("b.unit.label")}><input className={inputCls} value={f.label} onChange={n("label")} placeholder={t("b.unit.label.ph")} autoFocus /></Field>
         <Field label={t("b.unit.type")} hint={t("b.unit.type.hint")}><select className={inputCls} value={f.unit_type} onChange={(e) => setF({ ...f, unit_type: e.target.value as UnitType })}>{(["residential", "commercial", "garage"] as const).map((k) => <option key={k} value={k}>{t(`unit.${k}`)}</option>)}</select></Field>
         <Field label={t("b.unit.area")}><input className={inputCls} type="number" step="0.1" value={f.area_sqm} onChange={n("area_sqm")} /></Field>
+        <Field label={t("b.unit.mea")} hint={t("b.unit.mea.hint")}><input className={inputCls} type="number" step="0.001" value={f.mea} onChange={n("mea")} /></Field>
         <Field label={t("b.unit.persons")}><input className={inputCls} type="number" value={f.persons} onChange={n("persons")} /></Field>
         <Field label={t("b.unit.heating")}><input className={inputCls} type="number" value={f.heating_kwh} onChange={n("heating_kwh")} /></Field>
         <Field label={t("b.unit.water")}><input className={inputCls} type="number" step="0.1" value={f.water_m3} onChange={n("water_m3")} /></Field>

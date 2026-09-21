@@ -1,4 +1,4 @@
-import { CATEGORIES, DEFAULT_KEY, type AllocationKey, type Category } from "./db.js";
+import { CATEGORIES, DEFAULT_KEY, type AllocationKey, type Category, type Pool } from "./db.js";
 
 export type Extraction = {
   provider: string;
@@ -8,6 +8,7 @@ export type Extraction = {
   period_start: string;
   period_end: string;
   allocation_key: AllocationKey;
+  pool: Pool;
   allocable: boolean;
   non_allocable_cents: number;
   non_allocable_reason: string;
@@ -25,7 +26,8 @@ Return ONLY a JSON object: { "positions": [ ... ], "notes": "..." } where each p
 - description: short label, e.g. "Wasser + Abwasser 2025"
 - amount_cents: the GROSS charge for the billing period in cents, VAT included. This is the "Abrechnung"/"Rechnungsbetrag"/"Bruttobetrag" for the period — NEVER the refund or additional payment (Erstattung/Nachzahlung), NEVER prepayments already made (Abschläge/Vorauszahlungen/bisherige Festsetzung), NEVER next year's instalments.
 - period_start, period_end: ISO dates of the billing period. Year only → Jan 1 – Dec 31.
-- allocation_key: area | persons | units | heating | water — the usual key under BetrKV/HeizkostenV practice (rainwater → area, water/sewage → water if sub-meters exist, heating → heating)
+- allocation_key: area | mea | persons | units | heating | water — the usual key (mea = Miteigentumsanteile, if the document allocates by co-ownership shares)
+- pool: "all" | "residential" | "commercial" — "residential" if the document says the cost concerns apartments only (e.g. waste when the shop has its own contract), else "all" under BetrKV/HeizkostenV practice (rainwater → area, water/sewage → water if sub-meters exist, heating → heating)
 - allocable: false only if the WHOLE position is not allocable under § 2 BetrKV
 - non_allocable_cents: gross amount of non-allocable items mixed into this position (repairs, admin), else 0
 - non_allocable_reason: short English reason or ""
@@ -63,7 +65,7 @@ export async function extractInvoices(input: ModelInput): Promise<{ positions: E
   const parsed = JSON.parse(raw) as { positions?: Partial<Extraction>[]; notes?: string } | Partial<Extraction>;
   const list = Array.isArray((parsed as { positions?: unknown }).positions) ? (parsed as { positions: Partial<Extraction>[] }).positions : [parsed as Partial<Extraction>];
   const notes = String((parsed as { notes?: string }).notes ?? "").slice(0, 500);
-  return { positions: list.map(coerceExtraction).filter((p) => p.amount_cents > 0 || p.provider), notes };
+  return { positions: list.map(coerceExtraction).filter((p) => p.amount_cents !== 0 || p.provider), notes };
 }
 export async function extractInvoice(input: ModelInput): Promise<Extraction> {
   const { positions, notes } = await extractInvoices(input);
@@ -74,18 +76,20 @@ export async function extractInvoice(input: ModelInput): Promise<Extraction> {
 // Never trust the model blindly — coerce into our enums and sane defaults.
 export function coerceExtraction(parsed: Partial<Extraction>): Extraction {
   const category = (CATEGORIES as readonly string[]).includes(parsed.category ?? "") ? (parsed.category as Category) : "other";
-  const keys: AllocationKey[] = ["area", "persons", "units", "heating", "water"];
+  const keys: AllocationKey[] = ["area", "mea", "persons", "units", "heating", "water"];
   const allocation_key = keys.includes(parsed.allocation_key as AllocationKey) ? (parsed.allocation_key as AllocationKey) : DEFAULT_KEY[category];
+  const pool = ["all", "residential", "commercial"].includes(String((parsed as { pool?: string }).pool)) ? (parsed as { pool: Pool }).pool : "all";
   const iso = (s: unknown, fallback: string) => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : fallback);
   const year = new Date().getFullYear() - 1;
   return {
     provider: String(parsed.provider ?? "Unknown").slice(0, 120),
     category,
     description: String(parsed.description ?? "").slice(0, 200),
-    amount_cents: Math.max(0, Math.round(Number(parsed.amount_cents ?? 0)) || 0),
+    amount_cents: Math.round(Number(parsed.amount_cents ?? 0)) || 0, // may be negative for credit notes
     period_start: iso(parsed.period_start, `${year}-01-01`),
     period_end: iso(parsed.period_end, `${year}-12-31`),
     allocation_key,
+    pool,
     allocable: parsed.allocable !== false,
     non_allocable_cents: Math.max(0, Math.round(Number(parsed.non_allocable_cents ?? 0)) || 0),
     non_allocable_reason: String(parsed.non_allocable_reason ?? "").slice(0, 200),
