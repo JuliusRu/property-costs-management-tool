@@ -7,9 +7,9 @@ export type StatementLine = {
   description: string | null;
   allocation_key: AllocationKey;
   total_cents: number;      // building total for the year (pro-rated if the invoice period crosses years)
-  basis_unit: number;       // this unit's share basis (e.g. 58 m²)
-  basis_total: number;      // total basis across the building (e.g. 178 m²)
-  unit_share_cents: number; // the unit's full-year share before occupancy
+  basis_unit: number;       // kept for compatibility; the formula string carries the numbers
+  basis_total: number;
+  unit_share_cents: number;
   days_occupied: number;    // days the tenant occupied the unit in the year
   days_in_year: number;
   share_cents: number;      // what the tenant actually owes
@@ -111,6 +111,21 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
   let allocable = 0, nonAllocable = 0, tenantsTotal = 0, ownerVacancy = 0, invoiced = 0;
   const checks: Check[] = [];
 
+  // HeizkostenV § 7: heating costs are split into a basic part (by area) and a consumption part (by metered kWh).
+  const HEATING_CONSUMPTION_SHARE = 0.7;
+
+  type Component = { label: string; amount: number; key: AllocationKey; prorated: boolean };
+  const componentsOf = (inv: Invoice, allocableAmount: number): Component[] => {
+    if (inv.allocation_key === "heating") {
+      const consumption = Math.round(allocableAmount * HEATING_CONSUMPTION_SHARE);
+      return [
+        { label: "30 % basic costs", amount: allocableAmount - consumption, key: "area", prorated: true },
+        { label: "70 % consumption", amount: consumption, key: "heating", prorated: false },
+      ];
+    }
+    return [{ label: "", amount: allocableAmount, key: inv.allocation_key, prorated: TIME_PRORATED[inv.allocation_key] }];
+  };
+
   for (const inv of invoices) {
     const months = monthsOverlap(inv.period_start, inv.period_end, year);
     if (months === 0) continue;
@@ -119,40 +134,53 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     invoiced += yearAmount;
     if (pm !== months) checks.push({ level: "INFO", code: "PRORATED", message: `${inv.provider} (${inv.description ?? inv.category}) covers ${pm} months; ${months} of them fall into ${year} → ${eur(yearAmount)} of ${eur(inv.amount_cents)} used.` });
     if (!inv.allocable) { nonAllocable += yearAmount; continue; }
-    allocable += yearAmount;
+    const excluded = Math.min(yearAmount, Math.round(((inv.non_allocable_cents ?? 0) * months) / pm));
+    nonAllocable += excluded;
+    const allocableAmount = yearAmount - excluded;
+    allocable += allocableAmount;
 
-    const key = inv.allocation_key;
-    const bases = units.map((u) => basis(u, key));
-    const basisTotal = bases.reduce((s, b) => s + b, 0);
-    if (basisTotal === 0) { checks.push({ level: "BLOCKER", code: "NO_BASIS", message: `${inv.provider}: allocation key "${key}" has no data on any unit.`, hint: "Enter the values on the units or choose a different key." }); continue; }
-    const unitShares = splitCents(yearAmount, bases);
-
-    units.forEach((u, i) => {
-      const unitShare = unitShares[i];
-      const occupants = tenants.filter((t) => t.unit_id === u.id);
-      const dayWeights = occupants.map((t) => (TIME_PRORATED[key] ? occupiedDays(t, year) : diy));
-      const occupiedSum = dayWeights.reduce((s, d) => s + d, 0);
-      // For consumption keys the whole unit share goes to the occupant(s); otherwise vacancy days stay with the owner.
-      const weights = TIME_PRORATED[key] ? [...dayWeights, Math.max(0, diy - occupiedSum)] : [...dayWeights, 0];
-      const parts = splitCents(unitShare, weights);
-      const vacancyPart = parts[parts.length - 1];
-      ownerVacancy += vacancyPart;
-
-      occupants.forEach((t, j) => {
-        const days = TIME_PRORATED[key] ? dayWeights[j] : diy;
-        const share = parts[j];
-        tenantsTotal += share;
-        const base = `${eur(yearAmount)} × ${bases[i]} ${KEY_UNIT[key]} / ${basisTotal} ${KEY_UNIT[key]} = ${eur(unitShare)}`;
-        const formula = TIME_PRORATED[key] && days !== diy
-          ? `${base}; × ${days} / ${diy} days occupied = ${eur(share)}`
-          : `${base}`;
-        perTenant.get(t.id)!.push({
-          invoice_id: inv.id, provider: inv.provider, category: inv.category, description: inv.description,
-          allocation_key: key, total_cents: yearAmount, basis_unit: bases[i], basis_total: basisTotal,
-          unit_share_cents: unitShare, days_occupied: days, days_in_year: diy, share_cents: share, formula,
+    const comps = componentsOf(inv, allocableAmount);
+    const acc = new Map<number, { share: number; days: number; parts: string[] }>();
+    let ok = true;
+    for (const c of comps) {
+      const bases = units.map((u) => basis(u, c.key));
+      const basisTotal = bases.reduce((s, b) => s + b, 0);
+      if (basisTotal === 0) { checks.push({ level: "BLOCKER", code: "NO_BASIS", message: `${inv.provider}: allocation key "${c.key}" has no data on any unit.`, hint: "Enter the values on the units or choose a different key." }); ok = false; break; }
+      const unitShares = splitCents(c.amount, bases);
+      units.forEach((u, i) => {
+        const unitShare = unitShares[i];
+        const occupants = tenants.filter((t) => t.unit_id === u.id);
+        const dayWeights = occupants.map((t) => (c.prorated ? occupiedDays(t, year) : diy));
+        const occupiedSum = dayWeights.reduce((s, d) => s + d, 0);
+        const weights = c.prorated ? [...dayWeights, Math.max(0, diy - occupiedSum)] : [...dayWeights, 0];
+        const parts = splitCents(unitShare, weights);
+        ownerVacancy += parts[parts.length - 1];
+        occupants.forEach((t, j) => {
+          const days = c.prorated ? dayWeights[j] : diy;
+          const share = parts[j];
+          tenantsTotal += share;
+          const prefix = c.label ? `${c.label}: ` : "";
+          let f = `${prefix}${eur(c.amount)} × ${bases[i]} ${KEY_UNIT[c.key]} / ${basisTotal} ${KEY_UNIT[c.key]} = ${eur(unitShare)}`;
+          if (c.prorated && days !== diy) f += ` × ${days}/${diy} days = ${eur(share)}`;
+          const a = acc.get(t.id) ?? { share: 0, days: diy, parts: [] };
+          a.share += share; a.days = Math.min(a.days, days); a.parts.push(f);
+          acc.set(t.id, a);
         });
       });
-    });
+    }
+    if (!ok) continue;
+    for (const t of tenants) {
+      const a = acc.get(t.id);
+      if (!a) continue;
+      const formula = a.parts.length > 1 ? `${a.parts.join("; ")} → ${eur(a.share)}` : a.parts[0];
+      const total = comps.reduce((s, c) => s + c.amount, 0);
+      const excludedNote = excluded > 0 ? ` (${eur(excluded)} not allocable excluded)` : "";
+      perTenant.get(t.id)!.push({
+        invoice_id: inv.id, provider: inv.provider, category: inv.category, description: inv.description,
+        allocation_key: inv.allocation_key, total_cents: total, basis_unit: 0, basis_total: 0,
+        unit_share_cents: 0, days_occupied: a.days, days_in_year: diy, share_cents: a.share, formula: formula + excludedNote,
+      });
+    }
   }
 
   const statements = tenants.map((t) => {

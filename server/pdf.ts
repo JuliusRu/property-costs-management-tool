@@ -7,7 +7,7 @@ export const eur = (cents: number) =>
 
 const KEY_LABEL: Record<string, string> = {
   area: "nach Wohnfläche (m²)", persons: "nach Personen", units: "je Einheit",
-  heating: "nach Heizverbrauch (kWh)", water: "nach Wasserverbrauch (m³)",
+  heating: "Heizung: 30 % Fläche / 70 % Verbrauch (HeizkostenV)", water: "nach Wasserverbrauch (m³)",
 };
 
 export function statementPdf(property: Property, s: TenantStatement, portalUrl: string): Promise<Buffer> {
@@ -36,7 +36,7 @@ export function statementPdf(property: Property, s: TenantStatement, portalUrl: 
     for (const l of s.lines) {
       const y = doc.y;
       doc.fontSize(9).text(`${l.description ?? l.category} — ${l.provider}`, colX[0], y, { width: 195 });
-      doc.text(`${KEY_LABEL[l.allocation_key]} ${l.basis_unit}/${l.basis_total}`, colX[1], y, { width: 125 });
+      doc.text(KEY_LABEL[l.allocation_key], colX[1], y, { width: 125 });
       doc.text(eur(l.total_cents), colX[2], y, { width: 85, align: "right" });
       doc.text(eur(l.share_cents), colX[3], y, { width: 80, align: "right" });
       doc.moveDown(0.2).fontSize(7).fillColor("#777").text(`Rechnung: ${l.formula}`, colX[0], doc.y, { width: 500 }).fillColor("#000");

@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS invoices (
   period_end TEXT NOT NULL,
   allocation_key TEXT NOT NULL,
   allocable INTEGER NOT NULL DEFAULT 1,
+  non_allocable_cents INTEGER NOT NULL DEFAULT 0,
+  non_allocable_reason TEXT,
   source TEXT NOT NULL DEFAULT 'manual',
   file_name TEXT,
   ai_confidence REAL,
@@ -97,6 +99,12 @@ CREATE TABLE IF NOT EXISTS runs (
   checks_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (property_id, year)
+);
+CREATE TABLE IF NOT EXISTS waitlist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  units INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS statements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,7 +121,8 @@ CREATE TABLE IF NOT EXISTS statements (
 `);
 
 // tiny forward-only migrations for databases created before a column existed
-for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE tenants ADD COLUMN move_out TEXT"]) {
+for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE tenants ADD COLUMN move_out TEXT",
+  "ALTER TABLE invoices ADD COLUMN non_allocable_cents INTEGER NOT NULL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN non_allocable_reason TEXT"]) {
   try { db.exec(stmt); } catch { /* column exists */ }
 }
 
@@ -130,6 +139,7 @@ export type Invoice = {
   id: number; property_id: number; provider: string; category: Category;
   description: string | null; amount_cents: number; period_start: string;
   period_end: string; allocation_key: AllocationKey; allocable: number;
+  non_allocable_cents: number; non_allocable_reason: string | null;
   source: string; file_name: string | null; ai_confidence: number | null;
   ai_notes: string | null; created_at: string;
 };

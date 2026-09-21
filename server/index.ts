@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import multer from "multer";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { db, q, CATEGORIES, DEFAULT_KEY, type Category, type AllocationKey } from "./db.js";
@@ -57,6 +58,21 @@ app.get("/api/portal/:token/invoice/:id/file", (req, res) => {
   res.sendFile(path.join(UPLOAD_DIR, inv.file_name));
 });
 
+// ---------- public waitlist (landing page) ----------
+const waitlistHits = new Map<string, number[]>();
+app.post("/api/waitlist", (req, res) => {
+  const ip = req.ip ?? "?";
+  const now = Date.now();
+  const hits = (waitlistHits.get(ip) ?? []).filter((t) => now - t < 3_600_000);
+  if (hits.length >= 10) return res.status(429).json({ error: "too many requests" });
+  hits.push(now); waitlistHits.set(ip, hits);
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 200) return res.status(400).json({ error: "Please enter a valid e-mail address." });
+  const units = Number.isFinite(Number(req.body?.units)) ? Math.max(0, Math.min(10000, Math.round(Number(req.body.units)))) : null;
+  db.prepare("INSERT INTO waitlist (email, units) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET units = excluded.units").run(email, units);
+  res.status(201).json({ ok: true });
+});
+
 // everything below requires the landlord session
 app.use("/api", requireLandlord);
 
@@ -65,8 +81,57 @@ app.get("/api/properties", (_req, res) => {
   res.json(q.properties().map((p) => ({ ...p, units: q.units(p.id), tenants: q.tenants(p.id) })));
 });
 app.get("/api/meta", (_req, res) => res.json({ categories: CATEGORIES, default_key: DEFAULT_KEY }));
+app.get("/api/waitlist", (_req, res) => res.json(db.prepare("SELECT email, units, created_at FROM waitlist ORDER BY id DESC").all()));
 // Demo helper: wipe everything and reseed so the flow can be shown again from scratch.
 app.post("/api/reset", (_req, res) => { resetAndSeed(); res.json({ ok: true }); });
+
+// ---------- building: property, units, tenants ----------
+const isoOrNull = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+const numOr = (v: unknown, d: number) => (v === undefined || v === null || v === "" ? d : Number(v));
+
+app.patch("/api/properties/:id", (req, res) => {
+  const p = q.property(num(req.params.id));
+  if (!p) return res.status(404).end();
+  const b = req.body ?? {};
+  db.prepare("UPDATE properties SET name = ?, address = ? WHERE id = ?").run(String(b.name ?? p.name).slice(0, 120), String(b.address ?? p.address).slice(0, 200), p.id);
+  res.json(q.property(p.id));
+});
+app.post("/api/properties/:id/units", (req, res) => {
+  const b = req.body ?? {};
+  if (!b.label) return res.status(400).json({ error: "label missing" });
+  const r = db.prepare("INSERT INTO units (property_id, label, area_sqm, persons, heating_kwh, water_m3) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(num(req.params.id), String(b.label).slice(0, 60), numOr(b.area_sqm, 0), numOr(b.persons, 1), numOr(b.heating_kwh, 0), numOr(b.water_m3, 0));
+  res.status(201).json(q.unit(Number(r.lastInsertRowid)));
+});
+app.patch("/api/units/:id", (req, res) => {
+  const u = q.unit(num(req.params.id));
+  if (!u) return res.status(404).end();
+  const b = req.body ?? {};
+  db.prepare("UPDATE units SET label = ?, area_sqm = ?, persons = ?, heating_kwh = ?, water_m3 = ? WHERE id = ?")
+    .run(String(b.label ?? u.label).slice(0, 60), numOr(b.area_sqm, u.area_sqm), numOr(b.persons, u.persons), numOr(b.heating_kwh, u.heating_kwh), numOr(b.water_m3, u.water_m3), u.id);
+  res.json(q.unit(u.id));
+});
+app.delete("/api/units/:id", (req, res) => { db.prepare("DELETE FROM units WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
+
+app.post("/api/units/:id/tenants", (req, res) => {
+  const u = q.unit(num(req.params.id));
+  if (!u) return res.status(404).end();
+  const b = req.body ?? {};
+  if (!b.name || !b.email) return res.status(400).json({ error: "name and email required" });
+  const r = db.prepare("INSERT INTO tenants (unit_id, name, email, monthly_prepayment_cents, move_in, move_out, portal_token) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(u.id, String(b.name).slice(0, 120), String(b.email).slice(0, 200), Math.round(numOr(b.monthly_prepayment_cents, 0)), isoOrNull(b.move_in), isoOrNull(b.move_out), randomBytes(16).toString("hex"));
+  res.status(201).json(q.tenant(Number(r.lastInsertRowid)));
+});
+app.patch("/api/tenants/:id", (req, res) => {
+  const t = q.tenant(num(req.params.id));
+  if (!t) return res.status(404).end();
+  const b = req.body ?? {};
+  db.prepare("UPDATE tenants SET name = ?, email = ?, monthly_prepayment_cents = ?, move_in = ?, move_out = ? WHERE id = ?")
+    .run(String(b.name ?? t.name).slice(0, 120), String(b.email ?? t.email).slice(0, 200), Math.round(numOr(b.monthly_prepayment_cents, t.monthly_prepayment_cents)),
+      "move_in" in b ? isoOrNull(b.move_in) : t.move_in, "move_out" in b ? isoOrNull(b.move_out) : t.move_out, t.id);
+  res.json(q.tenant(t.id));
+});
+app.delete("/api/tenants/:id", (req, res) => { db.prepare("DELETE FROM tenants WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
 
 // ---------- invoices ----------
 app.get("/api/properties/:id/invoices", (req, res) => {
@@ -81,12 +146,13 @@ function insertInvoice(propertyId: number, b: Record<string, unknown>) {
   const amount = Math.round(Number(b.amount_cents));
   if (!Number.isFinite(amount) || amount < 0) throw new Error("amount_cents invalid");
   for (const d of [b.period_start, b.period_end]) if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) throw new Error("period invalid");
+  const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? 0)) || 0));
   const r = db.prepare(
-    `INSERT INTO invoices (property_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, allocable, source, file_name, ai_confidence, ai_notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO invoices (property_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, allocable, non_allocable_cents, non_allocable_reason, source, file_name, ai_confidence, ai_notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(propertyId, String(b.provider ?? "").slice(0, 120), category, String(b.description ?? "").slice(0, 200), amount,
-    String(b.period_start), String(b.period_end), key, b.allocable === false ? 0 : 1, String(b.source ?? "manual"),
-    b.file_name ? String(b.file_name) : null, b.ai_confidence == null ? null : Number(b.ai_confidence), b.ai_notes ? String(b.ai_notes) : null);
+    String(b.period_start), String(b.period_end), key, b.allocable === false ? 0 : 1, nonAlloc, b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null,
+    String(b.source ?? "manual"), b.file_name ? String(b.file_name) : null, b.ai_confidence == null ? null : Number(b.ai_confidence), b.ai_notes ? String(b.ai_notes) : null);
   return q.invoice(Number(r.lastInsertRowid));
 }
 
@@ -101,10 +167,13 @@ app.patch("/api/invoices/:id", (req, res) => {
   const category = (CATEGORIES as readonly string[]).includes(b.category) ? b.category : inv.category;
   const keys = ["area", "persons", "units", "heating", "water"];
   const key = keys.includes(b.allocation_key) ? b.allocation_key : inv.allocation_key;
-  db.prepare(`UPDATE invoices SET provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, allocable=? WHERE id=?`)
+  const amount = Math.round(Number(b.amount_cents ?? inv.amount_cents));
+  const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? inv.non_allocable_cents)) || 0));
+  db.prepare(`UPDATE invoices SET provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, allocable=?, non_allocable_cents=?, non_allocable_reason=? WHERE id=?`)
     .run(String(b.provider ?? inv.provider).slice(0, 120), category, String(b.description ?? inv.description ?? "").slice(0, 200),
-      Math.round(Number(b.amount_cents ?? inv.amount_cents)), String(b.period_start ?? inv.period_start), String(b.period_end ?? inv.period_end),
-      key, b.allocable === undefined ? inv.allocable : (b.allocable ? 1 : 0), inv.id);
+      amount, String(b.period_start ?? inv.period_start), String(b.period_end ?? inv.period_end),
+      key, b.allocable === undefined ? inv.allocable : (b.allocable ? 1 : 0), nonAlloc,
+      b.non_allocable_reason === undefined ? inv.non_allocable_reason : (b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null), inv.id);
   res.json(q.invoice(inv.id));
 });
 app.delete("/api/invoices/:id", (req, res) => {

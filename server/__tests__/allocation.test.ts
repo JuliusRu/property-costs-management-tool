@@ -12,7 +12,7 @@ const tenant = (id: number, unit_id: number, move_in: string | null = null, move
   ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id) });
 const inv = (id: number, amount_cents: number, allocation_key: Invoice["allocation_key"], extra: Partial<Invoice> = {}): Invoice =>
   ({ id, property_id: 1, provider: "P", category: "other", description: null, amount_cents, period_start: "2025-01-01", period_end: "2025-12-31",
-    allocation_key, allocable: 1, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
+    allocation_key, allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
 
 test("largest-remainder split always sums to the total", () => {
   for (const total of [1, 2, 100, 98400, 12345]) {
@@ -90,4 +90,23 @@ test("leap year has 366 days", () => {
   assert.equal(daysInYear(2024), 366);
   assert.equal(daysInYear(2025), 365);
   assert.equal(occupiedDays({ move_in: "2024-02-01", move_out: null }, 2024), 335);
+});
+
+test("heating: 30 % basic by area, 70 % consumption by kWh; only the basic part follows occupancy", () => {
+  const tenants = [tenant(1, 1), tenant(2, 2), tenant(3, 3, "2025-09-01")];
+  const { statements, summary } = computeStatements(units, tenants, [inv(1, 215471, "heating")], 2025);
+  assert.equal(summary.tenants_cents + summary.owner_vacancy_cents, 215471);
+  assert.match(statements[0].lines[0].formula, /30 % basic costs: 646,41\s€ × 58 m² \/ 178 m²/);
+  assert.match(statements[0].lines[0].formula, /70 % consumption: 1\.508,30\s€ × 4100 kWh \/ 14300 kWh/);
+  // vacancy only on the basic part: 30 % × 46/178 × 243/365 days
+  const basicC = Math.round(64641 * 46 / 178);
+  assert.ok(summary.owner_vacancy_cents > 0 && summary.owner_vacancy_cents < basicC);
+});
+
+test("partially non-allocable invoice: only the allocable part is distributed", () => {
+  const { summary, statements } = computeStatements(units, [tenant(1, 1), tenant(2, 2), tenant(3, 3)], [inv(1, 193554, "area", { non_allocable_cents: 18650 })], 2025);
+  assert.equal(summary.non_allocable_cents, 18650);
+  assert.equal(summary.allocable_cents, 174904);
+  assert.equal(summary.tenants_cents, 174904);
+  assert.match(statements[0].lines[0].formula, /186,50\s€ not allocable excluded/);
 });

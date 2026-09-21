@@ -3,7 +3,7 @@ export type Tenant = { id: number; unit_id: number; name: string; email: string;
 export type Property = { id: number; name: string; address: string; country: string; units: Unit[]; tenants: Tenant[] };
 export type Invoice = {
   id: number; property_id: number; provider: string; category: string; description: string | null; amount_cents: number;
-  period_start: string; period_end: string; allocation_key: string; allocable: number; source: string; file_name: string | null;
+  period_start: string; period_end: string; allocation_key: string; allocable: number; non_allocable_cents: number; non_allocable_reason: string | null; source: string; file_name: string | null;
   ai_confidence: number | null; ai_notes: string | null; created_at: string;
 };
 export type Line = { invoice_id: number; provider: string; category: string; description: string | null; allocation_key: string; total_cents: number; basis_unit: number; basis_total: number; unit_share_cents: number; days_occupied: number; days_in_year: number; share_cents: number; formula: string };
@@ -11,7 +11,7 @@ export type Summary = { year: number; invoiced_cents: number; non_allocable_cent
 export type Check = { level: "BLOCKER" | "WARNING" | "INFO"; code: string; message: string; hint?: string };
 export type Run = { statements: Statement[]; summary: Summary | null; checks: Check[]; created_at: string | null };
 export type Statement = { id: number; tenant_id: number; year: number; total_cents: number; prepaid_cents: number; balance_cents: number; lines: Line[]; created_at: string; sent_at: string | null };
-export type Extraction = { provider: string; category: string; description: string; amount_cents: number; period_start: string; period_end: string; allocation_key: string; allocable: boolean; confidence: number; notes: string };
+export type Extraction = { provider: string; category: string; description: string; amount_cents: number; period_start: string; period_end: string; allocation_key: string; allocable: boolean; non_allocable_cents: number; non_allocable_reason: string; confidence: number; notes: string };
 
 export class ApiError extends Error { status: number; constructor(status: number, msg: string) { super(msg); this.status = status; } }
 
@@ -41,6 +41,14 @@ export const api = {
   statements: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements?year=${year}`),
   generate: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements/generate`, json({ year })),
   reset: () => req<{ ok: true }>("/api/reset", { method: "POST" }),
+  waitlist: (email: string, units: number | null) => req<{ ok: true }>("/api/waitlist", json({ email, units })),
+  updateProperty: (id: number, body: { name?: string; address?: string }) => req<Property>(`/api/properties/${id}`, { ...json(body), method: "PATCH" }),
+  createUnit: (pid: number, body: Partial<Unit>) => req<Unit>(`/api/properties/${pid}/units`, json(body)),
+  updateUnit: (id: number, body: Partial<Unit>) => req<Unit>(`/api/units/${id}`, { ...json(body), method: "PATCH" }),
+  deleteUnit: (id: number) => req<void>(`/api/units/${id}`, { method: "DELETE" }),
+  createTenant: (unitId: number, body: Partial<Tenant>) => req<Tenant>(`/api/units/${unitId}/tenants`, json(body)),
+  updateTenant: (id: number, body: Partial<Tenant>) => req<Tenant>(`/api/tenants/${id}`, { ...json(body), method: "PATCH" }),
+  deleteTenant: (id: number) => req<void>(`/api/tenants/${id}`, { method: "DELETE" }),
   send: (sid: number) => req<{ ok: true; sent_at: string }>(`/api/statements/${sid}/send`, { method: "POST" }),
   portal: (token: string) => req<{ tenant: { name: string; email: string; monthly_prepayment_cents: number }; unit: Unit; property: { id: number; name: string; address: string }; statements: Statement[] }>(`/api/portal/${token}`),
 };
@@ -51,4 +59,4 @@ export const CATEGORY_LABEL: Record<string, string> = {
   cleaning: "Building cleaning", garden: "Garden", lighting: "Lighting", chimney: "Chimney sweep", insurance: "Insurance",
   caretaker: "Caretaker", elevator: "Elevator", cable: "Cable/TV", other: "Other",
 };
-export const KEY_LABEL: Record<string, string> = { area: "by area (m²)", persons: "by persons", units: "per unit", heating: "by heating kWh", water: "by water m³" };
+export const KEY_LABEL: Record<string, string> = { area: "by living area (m²)", persons: "by persons", units: "equally per unit", heating: "heating: 30 % area / 70 % kWh (HeizkostenV)", water: "by water m³" };
