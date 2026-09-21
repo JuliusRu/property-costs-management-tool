@@ -22,3 +22,7 @@ __pycache__/
 # Laufzeitdaten
 data/
 uploads/
+
+# Videos / Abgabematerial
+*.mp4
+*.mov
