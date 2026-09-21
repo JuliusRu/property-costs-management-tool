@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   monthly_prepayment_cents INTEGER NOT NULL DEFAULT 0,
   move_in TEXT,
   move_out TEXT,
-  portal_token TEXT NOT NULL UNIQUE
+  portal_token TEXT NOT NULL UNIQUE,
+  lease_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS invoices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,7 +158,8 @@ for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE 
   "ALTER TABLE units ADD COLUMN unit_type TEXT NOT NULL DEFAULT 'residential'",
   "ALTER TABLE invoices ADD COLUMN co2_cents INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE invoices ADD COLUMN energy_kwh REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE statements ADD COLUMN suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0"]) {
+  "ALTER TABLE statements ADD COLUMN suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tenants ADD COLUMN lease_json TEXT NOT NULL DEFAULT '{}'"]) {
   try { db.exec(stmt); } catch { /* column exists */ }
 }
 
@@ -180,7 +182,23 @@ export type Unit = {
 export type Tenant = {
   id: number; unit_id: number; name: string; email: string;
   monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string;
+  lease_json: string;
 };
+
+// Rules read from (or typed in from) the lease. They rank above the building default — a lease-agreed key binds the landlord.
+export type LeaseClause = { topic: string; quote: string; page: number | null };
+export type LeaseRules = {
+  prepayment_type: "vorauszahlung" | "pauschale"; // Pauschale = flat rate, no annual statement (§ 556 (2) BGB)
+  key_overrides: Partial<Record<Category, AllocationKey>>;
+  excluded_categories: Category[];               // cost types the lease does not pass on
+  clauses: LeaseClause[];
+  source_file: string | null;
+  confirmed: boolean;
+};
+export const DEFAULT_LEASE: LeaseRules = { prepayment_type: "vorauszahlung", key_overrides: {}, excluded_categories: [], clauses: [], source_file: null, confirmed: false };
+export function leaseOf(t: Tenant): LeaseRules {
+  try { return { ...DEFAULT_LEASE, ...JSON.parse(t.lease_json || "{}") }; } catch { return { ...DEFAULT_LEASE }; }
+}
 export type Invoice = {
   id: number; property_id: number; provider: string; category: Category;
   description: string | null; amount_cents: number; period_start: string;

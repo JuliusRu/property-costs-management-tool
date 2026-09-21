@@ -1,4 +1,4 @@
-import { CO2_FACTOR, DEFAULT_SETTINGS, type AllocationKey, type Invoice, type PropertySettings, type Tenant, type Unit } from "./db.js";
+import { CO2_FACTOR, DEFAULT_SETTINGS, leaseOf, type AllocationKey, type Category, type Invoice, type PropertySettings, type Tenant, type Unit } from "./db.js";
 
 export type StatementLine = {
   invoice_id: number;
@@ -37,6 +37,7 @@ export type BuildingSummary = {
   owner_vacancy_cents: number;   // stays with the owner because units were vacant
   rounding_cents: number;        // must be 0 — invariant
   co2_landlord_cents: number;    // CO2KostAufG share the landlord carries (included in non_allocable)
+  owner_lease_diff_cents: number; // what the landlord bears because leases deviate from the building default (+ = landlord loses)
   legal_basis: string;           // which rule set the run was computed with
 };
 
@@ -126,8 +127,12 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
   const diy = daysInYear(year);
   const perTenant = new Map<number, StatementLine[]>();
   for (const t of tenants) perTenant.set(t.id, []);
-  let allocable = 0, nonAllocable = 0, tenantsTotal = 0, ownerVacancy = 0, invoiced = 0, co2Landlord = 0;
+  let allocable = 0, nonAllocable = 0, tenantsTotal = 0, ownerVacancy = 0, invoiced = 0, co2Landlord = 0, leaseDiff = 0;
   const checks: Check[] = [];
+  const leases = new Map(tenants.map((t) => [t.id, leaseOf(t)]));
+  // Tenants on a flat rate (Pauschale) get no statement at all; their unit's share stays with the landlord.
+  const flatRate = new Set(tenants.filter((t) => leases.get(t.id)!.prepayment_type === "pauschale").map((t) => t.id));
+  for (const t of tenants) if (flatRate.has(t.id)) checks.push({ level: "INFO", code: "PAUSCHALE", message: `${t.name}: the lease agrees a flat rate (Betriebskostenpauschale) — no statement is issued and no additional payment can be claimed (§ 556 (2) BGB).` });
 
   // HeizkostenV § 7: heating costs are split into a basic part (by area) and a consumption part (by metered kWh), 50–70 % consumption.
   const share = Math.min(0.7, Math.max(0.5, settings.consumption_share || 0.7));
@@ -211,11 +216,30 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
         ownerVacancy += parts[parts.length - 1];
         occupants.forEach((t, j) => {
           const days = c.prorated ? dayWeights[j] : diy;
-          const share = parts[j];
-          tenantsTotal += share;
+          let share = parts[j];
+          const lease = leases.get(t.id)!;
           const prefix = c.label ? `${c.label}: ` : "";
           let f = `${prefix}${eur(c.amount)} × ${bases[i]} ${KEY_UNIT[c.key]} / ${basisTotal} ${KEY_UNIT[c.key]} = ${eur(unitShare)}`;
           if (c.prorated && days !== diy) f += ` × ${days}/${diy} days = ${eur(share)}`;
+          // Lease rules rank above the building default. Whatever the lease shifts is the landlord's gain or loss.
+          const cat = inv.category as Category;
+          if (flatRate.has(t.id) || lease.excluded_categories.includes(cat)) {
+            leaseDiff += share;
+            f = flatRate.has(t.id) ? `flat rate — not charged (${eur(share)} stays with the landlord)` : `not agreed in the lease — not charged (${eur(share)} stays with the landlord)`;
+            share = 0;
+          } else if (lease.key_overrides[cat] && lease.key_overrides[cat] !== c.key && !(inv.allocation_key === "heating" && !settings.heizkv_exempt)) {
+            const k2 = lease.key_overrides[cat]!;
+            const b2 = units.map((x) => (participates(x, inv.category) ? basis(x, k2) : 0));
+            const tot2 = b2.reduce((a, b) => a + b, 0);
+            if (tot2 > 0) {
+              const unitShare2 = Math.round((c.amount * b2[i]) / tot2);
+              const share2 = c.prorated ? Math.round((unitShare2 * days) / diy) : unitShare2;
+              leaseDiff += share - share2;
+              f = `lease: ${eur(c.amount)} × ${b2[i]} ${KEY_UNIT[k2]} / ${tot2} ${KEY_UNIT[k2]} = ${eur(unitShare2)}` + (c.prorated && days !== diy ? ` × ${days}/${diy} days = ${eur(share2)}` : "") + ` (building default would be ${eur(share)})`;
+              share = share2;
+            }
+          }
+          tenantsTotal += share;
           const a = acc.get(t.id) ?? { share: 0, days: diy, parts: [] };
           a.share += share; a.days = Math.min(a.days, days); a.parts.push(f);
           acc.set(t.id, a);
@@ -237,7 +261,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     }
   }
 
-  const statements = tenants.map((t) => {
+  const statements = tenants.filter((t) => !flatRate.has(t.id)).map((t) => {
     const unit = units.find((u) => u.id === t.unit_id)!;
     const lines = perTenant.get(t.id) ?? [];
     const total = lines.reduce((s, l) => s + l.share_cents, 0);
@@ -248,8 +272,10 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     return { tenant: t, unit, year, lines, total_cents: total, prepaid_cents: prepaid, months_occupied: months, balance_cents: total - prepaid, suggested_prepayment_cents: suggested };
   });
 
-  const rounding = allocable - tenantsTotal - ownerVacancy;
-  const summary: BuildingSummary = { year, invoiced_cents: invoiced, non_allocable_cents: nonAllocable, allocable_cents: allocable, tenants_cents: tenantsTotal, owner_vacancy_cents: ownerVacancy, rounding_cents: rounding, co2_landlord_cents: co2Landlord, legal_basis: RULES_VERSION };
+  const rounding = allocable - tenantsTotal - ownerVacancy - leaseDiff;
+  const summary: BuildingSummary = { year, invoiced_cents: invoiced, non_allocable_cents: nonAllocable, allocable_cents: allocable, tenants_cents: tenantsTotal, owner_vacancy_cents: ownerVacancy, rounding_cents: rounding, co2_landlord_cents: co2Landlord, owner_lease_diff_cents: leaseDiff, legal_basis: RULES_VERSION };
+  if (leaseDiff !== 0) checks.push({ level: leaseDiff > 0 ? "WARNING" : "INFO", code: "LEASE_DIFF", message: leaseDiff > 0 ? `Lease rules deviate from the building default — you bear ${eur(leaseDiff)} that cannot be charged to anyone.` : `Lease rules deviate from the building default — you recover ${eur(-leaseDiff)} more than the default split.`, hint: "Check the tenants' lease rules; a key agreed in a lease binds you even if the building default differs." });
+  for (const t of tenants) { const l = leases.get(t.id)!; if ((Object.keys(l.key_overrides).length || l.excluded_categories.length || l.prepayment_type === "pauschale") && !l.confirmed) checks.push({ level: "BLOCKER", code: "LEASE_UNCONFIRMED", message: `${t.name}: lease rules were read by AI but not confirmed yet.`, hint: "Open the tenant, review the extracted clauses and confirm." }); }
 
   // § 556 (3) BGB: the statement must reach the tenant within 12 months after the period — later, no additional charges can be claimed.
   const deadline = new Date(Date.UTC(year + 1, 11, 31));

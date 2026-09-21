@@ -60,8 +60,8 @@ export default function Invoices({ property }: { property: Property }) {
       {invoices.length === 0 ? (
         <Empty title={t("i.empty", { y: year })}>{t("i.empty.sub")}</Empty>
       ) : (
-        <Card>
-          <table className="w-full text-sm">
+        <Card className="overflow-x-auto">
+          <table className="w-full min-w-[820px] text-sm">
             <thead className="text-left text-xs text-mute">
               <tr><th className="px-5 py-3 font-medium">{t("i.th.provider")}</th><th className="px-5 py-3 font-medium">{t("i.th.category")}</th><th className="px-5 py-3 font-medium">{t("i.th.period")}</th><th className="px-5 py-3 font-medium">{t("i.th.key")}</th><th className="px-5 py-3 font-medium">{t("i.th.source")}</th><th className="px-5 py-3 text-right font-medium">{t("i.th.amount")}</th></tr>
             </thead>
@@ -136,6 +136,12 @@ function InvoiceForm({ title, sub, initial, onClose, onSave, onDelete }: { title
         <Field label={t("i.f.start")}><input className={inputCls} type="date" value={e.period_start} onChange={(ev) => set("period_start", ev.target.value)} /></Field>
         <Field label={t("i.f.end")}><input className={inputCls} type="date" value={e.period_end} onChange={(ev) => set("period_end", ev.target.value)} /></Field>
         <div className="col-span-2"><Field label={t("i.f.desc")}><input className={inputCls} value={e.description} onChange={(ev) => set("description", ev.target.value)} /></Field></div>
+        {(e.category === "heating" || e.co2_cents > 0) && (
+          <>
+            <Field label={t("i.f.co2")} hint={t("i.f.co2.hint")}><input className={inputCls + " num"} type="number" step="0.01" min="0" value={(e.co2_cents / 100).toFixed(2)} onChange={(ev) => set("co2_cents", Math.max(0, Math.round(Number(ev.target.value) * 100)))} /></Field>
+            <Field label={t("i.f.kwh")}><input className={inputCls + " num"} type="number" step="1" min="0" value={e.energy_kwh} onChange={(ev) => set("energy_kwh", Math.max(0, Number(ev.target.value)))} /></Field>
+          </>
+        )}
         <div className="col-span-2 rounded-lg bg-surface p-3">
           <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={e.allocable} onChange={(ev) => set("allocable", ev.target.checked)} /> {t("i.f.allocable")}</label>
           {e.allocable && (

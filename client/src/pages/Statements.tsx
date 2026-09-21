@@ -52,11 +52,14 @@ export default function Statements({ property, onChange }: { property: Property;
             <dl className="space-y-1.5 text-sm">
               <Row k={t("s.invoiced")} v={summary.invoiced_cents} />
               <Row k={t("s.nonAlloc")} v={-summary.non_allocable_cents} muted />
+              {summary.co2_landlord_cents > 0 && <Row k={"   " + t("s.co2")} v={-summary.co2_landlord_cents} muted />}
               <Row k={t("s.allocable")} v={summary.allocable_cents} bold />
               <Row k={t("s.toTenants")} v={summary.tenants_cents} />
               <Row k={t("s.vacancy")} v={summary.owner_vacancy_cents} tone={summary.owner_vacancy_cents > 0 ? "amber" : undefined} />
+              {summary.owner_lease_diff_cents !== 0 && <Row k={t("s.leaseDiff")} v={summary.owner_lease_diff_cents} tone="amber" />}
               <Row k={t("s.rounding")} v={summary.rounding_cents} tone={summary.rounding_cents === 0 ? "green" : "red"} />
             </dl>
+            <div className="mt-3 text-xs text-mute">{t("s.rules")}: {summary.legal_basis}</div>
             <div className="mt-4 flex gap-6 border-t border-line pt-3 text-sm">
               <div><div className="text-xs text-mute">{t("s.tenantsPay")}</div><Money cents={owed} className="font-bold text-ember" /></div>
               <div><div className="text-xs text-mute">{t("s.youRefund")}</div><Money cents={refunds} className="font-bold text-mint" /></div>
@@ -122,6 +125,9 @@ function StatementCard({ s, property, blocked, onChange }: { s: Statement; prope
         </div>
       </div>
       {err && <div className="px-6 pb-3 text-xs text-ember">{err}</div>}
+      {s.suggested_prepayment_cents > 0 && Math.abs(s.suggested_prepayment_cents - tenant.monthly_prepayment_cents) >= 500 && (
+        <div className="num border-t border-line px-6 py-2 text-xs text-ink-soft">{t("s.suggest")}: <b><Money cents={s.suggested_prepayment_cents} /></b> <span className="text-mute">(<Money cents={tenant.monthly_prepayment_cents} /> {t("s.prepaid")})</span></div>
+      )}
       {open && (
         <table className="w-full border-t border-line text-sm">
           <thead className="text-left text-xs text-mute"><tr><th className="px-6 py-2 font-medium">{t("s.th.cost")}</th><th className="px-6 py-2 font-medium">{t("s.th.calc")}</th><th className="px-6 py-2 text-right font-medium">{t("s.th.building")}</th><th className="px-6 py-2 text-right font-medium">{t("s.th.share")}</th></tr></thead>

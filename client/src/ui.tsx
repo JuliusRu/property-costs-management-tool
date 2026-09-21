@@ -95,7 +95,7 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
 export function Modal({ title, sub, onClose, children, wide }: { title: string; sub?: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean }) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-ink/50 p-4" onClick={onClose}>
-      <div className={`w-full ${wide ? "max-w-2xl" : "max-w-lg"} rounded-[var(--radius-card)] bg-paper p-6 shadow-2xl`} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal>
+      <div className={`w-full ${wide ? "max-w-2xl" : "max-w-lg"} max-h-[92vh] overflow-y-auto rounded-[var(--radius-card)] bg-paper p-6 shadow-2xl`} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal>
         <h2 className="text-xl font-bold">{title}</h2>
         {sub && <p className="mb-4 mt-1 text-sm text-mute">{sub}</p>}
         {children}

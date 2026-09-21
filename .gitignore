@@ -17,7 +17,7 @@ __pycache__/
 
 # Hackathon-Unterlagen mit Teilnehmernamen — nie ins Repo
 *.pdf
-!samples/*.pdf
+!samples/**/*.pdf
 
 # Laufzeitdaten
 data/

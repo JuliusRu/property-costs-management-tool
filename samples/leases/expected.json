@@ -1,0 +1,21 @@
+{
+  "mietvertrag-oeztuerk.pdf": {
+    "tenant_name": "Ayşe und Murat Öztürk",
+    "unit_hint": "1. Obergeschoss, 74 m²",
+    "move_in": "2019-10-01",
+    "move_out": null,
+    "monthly_prepayment_cents": 21000,
+    "prepayment_type": "vorauszahlung",
+    "key_overrides": { "waste": "area", "insurance": "area" },
+    "excluded_categories": ["cable"],
+    "clauses": [
+      { "topic": "Operating costs reference", "quote": "Der Mieter trägt die Betriebskosten im Sinne von § 2 der Betriebskostenverordnung (BetrKV) in der jeweils geltenden Fassung.", "page": 1 },
+      { "topic": "Waste by area (deviates from persons)", "quote": "Abweichend vom Verhältnis der Wohnflächen werden die Kosten der Müllbeseitigung nach dem Verhältnis der Wohnflächen umgelegt, nicht nach Personenzahl.", "page": 1 },
+      { "topic": "Cable excluded", "quote": "Die Kosten des Kabelanschlusses trägt der Mieter nicht; er schließt einen eigenen Vertrag mit einem Anbieter seiner Wahl.", "page": 1 },
+      { "topic": "Heating 70/30", "quote": "Heiz- und Warmwasserkosten werden nach der Heizkostenverordnung zu 70 % nach dem erfassten Verbrauch und zu 30 % nach der Wohnfläche verteilt.", "page": 1 },
+      { "topic": "Prepayment", "quote": "Zusätzlich zahlt der Mieter eine monatliche Vorauszahlung auf die Betriebskosten in Höhe von 210,00 EUR. Über die Vorauszahlungen wird jährlich abgerechnet.", "page": 1 }
+    ],
+    "confidence": 0.93,
+    "notes": "The waste clause deviates from the usual per-person key; charging the Öztürks by area binds you even though other tenants are charged by persons."
+  }
+}

@@ -3,7 +3,7 @@
 import PDFDocument from "pdfkit";
 import { createWriteStream, mkdirSync } from "node:fs";
 
-mkdirSync("samples", { recursive: true });
+mkdirSync("samples/leases", { recursive: true });
 
 type Sample = { file: string; provider: string; address: string; title: string; customer: string; period: string; lines: [string, string][]; total: string; note?: string };
 
@@ -60,4 +60,31 @@ for (const s of samples) {
   doc.text("Der Betrag wird am 01.03.2026 von Ihrem Konto eingezogen. Diese Rechnung wurde maschinell erstellt.");
   doc.end();
   console.log("wrote samples/" + s.file);
+}
+
+// ---- a sample lease with a deviating allocation clause (waste by area instead of persons) ----
+{
+  const doc = new PDFDocument({ size: "A4", margin: 60 });
+  doc.pipe(createWriteStream("samples/leases/mietvertrag-oeztuerk.pdf"));
+  doc.fontSize(16).text("Mietvertrag für Wohnraum").moveDown();
+  doc.fontSize(10)
+    .text("zwischen Julius Rummel, Lindenstraße 12, 52062 Aachen (Vermieter)")
+    .text("und Ayşe und Murat Öztürk (Mieter)").moveDown();
+  doc.fontSize(12).text("§ 1 Mietsache").fontSize(10)
+    .text("Vermietet wird die Wohnung im 1. Obergeschoss des Hauses Lindenstraße 12, 52062 Aachen, bestehend aus 3 Zimmern, Küche, Bad, Flur, mit einer Wohnfläche von ca. 74 m².").moveDown();
+  doc.fontSize(12).text("§ 2 Mietzeit").fontSize(10)
+    .text("Das Mietverhältnis beginnt am 01.10.2019 und läuft auf unbestimmte Zeit.").moveDown();
+  doc.fontSize(12).text("§ 3 Miete und Nebenkosten").fontSize(10)
+    .text("Die monatliche Grundmiete beträgt 740,00 EUR.")
+    .text("Zusätzlich zahlt der Mieter eine monatliche Vorauszahlung auf die Betriebskosten in Höhe von 210,00 EUR. Über die Vorauszahlungen wird jährlich abgerechnet.").moveDown();
+  doc.fontSize(12).text("§ 4 Betriebskosten").fontSize(10)
+    .text("Der Mieter trägt die Betriebskosten im Sinne von § 2 der Betriebskostenverordnung (BetrKV) in der jeweils geltenden Fassung. Die Kosten der Gebäudeversicherung werden nach dem Verhältnis der Wohnflächen umgelegt.")
+    .text("Abweichend vom Verhältnis der Wohnflächen werden die Kosten der Müllbeseitigung nach dem Verhältnis der Wohnflächen umgelegt, nicht nach Personenzahl.")
+    .text("Die Kosten des Kabelanschlusses trägt der Mieter nicht; er schließt einen eigenen Vertrag mit einem Anbieter seiner Wahl.")
+    .text("Heiz- und Warmwasserkosten werden nach der Heizkostenverordnung zu 70 % nach dem erfassten Verbrauch und zu 30 % nach der Wohnfläche verteilt.").moveDown();
+  doc.fontSize(12).text("§ 5 Sonstiges").fontSize(10)
+    .text("Die Wohnung wird von zwei Personen bewohnt. Änderungen der Personenzahl sind dem Vermieter mitzuteilen.").moveDown(2);
+  doc.text("Aachen, den 15.09.2019").moveDown(2).text("____________________          ____________________").text("Vermieter                                       Mieter");
+  doc.end();
+  console.log("wrote samples/leases/mietvertrag-oeztuerk.pdf");
 }

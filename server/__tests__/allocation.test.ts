@@ -10,7 +10,7 @@ const units: Unit[] = [
   { id: 3, property_id: 1, label: "C", unit_type: "residential", area_sqm: 46, persons: 1, heating_kwh: 3900, water_m3: 34 },
 ];
 const tenant = (id: number, unit_id: number, move_in: string | null = null, move_out: string | null = null): Tenant =>
-  ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id), access_code: "TESTCODE" });
+  ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id), access_code: "TESTCODE", lease_json: "{}" });
 const inv = (id: number, amount_cents: number, allocation_key: Invoice["allocation_key"], extra: Partial<Invoice> = {}): Invoice =>
   ({ id, property_id: 1, provider: "P", category: "other", description: null, amount_cents, period_start: "2025-01-01", period_end: "2025-12-31",
     allocation_key, allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, co2_cents: 0, energy_kwh: 0, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
@@ -171,4 +171,25 @@ test("suggested prepayment annualises a partial year (§ 560 (4))", () => {
   const { statements } = computeStatements(units, [tenant(1, 1), tenant(2, 2), tenant(3, 3, "2025-09-01")], [inv(1, 98400, "area")], 2025);
   const c = statements[2];
   assert.equal(c.suggested_prepayment_cents, Math.round((c.total_cents * 365) / 122 / 12));
+});
+
+test("lease key override: tenant is charged by the lease key, landlord bears the difference", () => {
+  const all = [tenant(1, 1), tenant(2, 2), tenant(3, 3)];
+  all[1] = { ...all[1], lease_json: JSON.stringify({ key_overrides: { waste: "area" }, confirmed: true }) };
+  const { statements, summary } = computeStatements(units, all, [inv(1, 55520, "persons", { category: "waste" })], 2025);
+  // default: B has 2 of 4 persons = 277,60 €; lease: 74/178 m² = 230,82 €
+  assert.equal(statements[1].total_cents, Math.round(55520 * 74 / 178));
+  assert.equal(summary.owner_lease_diff_cents, 27760 - Math.round(55520 * 74 / 178));
+  assert.equal(summary.rounding_cents, 0);
+  assert.match(statements[1].lines[0].formula, /building default would be/);
+});
+
+test("flat rate (Pauschale) tenants get no statement; unconfirmed AI lease rules block sending", () => {
+  const all = [tenant(1, 1), tenant(2, 2), tenant(3, 3)];
+  all[2] = { ...all[2], lease_json: JSON.stringify({ prepayment_type: "pauschale", confirmed: false }) };
+  const { statements, summary, checks } = computeStatements(units, all, [inv(1, 98400, "area")], 2025);
+  assert.equal(statements.length, 2);
+  assert.equal(summary.owner_lease_diff_cents, 25429);
+  assert.equal(summary.tenants_cents + summary.owner_lease_diff_cents, 98400);
+  assert.ok(checks.some((c) => c.code === "LEASE_UNCONFIRMED" && c.level === "BLOCKER"));
 });

@@ -5,10 +5,10 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, newAccessCode, settingsOf, type Category, type AllocationKey, type Tenant, type HeatingType } from "./db.js";
+import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, newAccessCode, settingsOf, leaseOf, type Category, type AllocationKey, type Tenant, type HeatingType } from "./db.js";
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
-import { extractInvoice, type Extraction } from "./ai.js";
+import { extractInvoice, extractLease, coerceLease, type Extraction, type LeaseExtraction } from "./ai.js";
 import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
@@ -114,7 +114,18 @@ app.use("/api", requireLandlord);
 
 // ---------- properties ----------
 app.get("/api/properties", (_req, res) => {
-  res.json(q.properties().map((p) => ({ ...p, settings: settingsOf(p), settings_json: undefined, units: q.units(p.id), tenants: q.tenants(p.id) })));
+  res.json(q.properties().map((p) => ({ ...p, settings: settingsOf(p), settings_json: undefined, units: q.units(p.id), tenants: q.tenants(p.id).map((t) => ({ ...t, lease: leaseOf(t), lease_json: undefined })) })));
+});
+app.post("/api/properties", (req, res) => {
+  const b = req.body ?? {};
+  if (!b.name) return res.status(400).json({ error: "name missing" });
+  const r = db.prepare("INSERT INTO properties (name, address, country, settings_json) VALUES (?, ?, 'DE', '{}')").run(String(b.name).slice(0, 120), String(b.address ?? "").slice(0, 200));
+  res.status(201).json(q.property(Number(r.lastInsertRowid)));
+});
+app.delete("/api/properties/:id", (req, res) => {
+  if (q.properties().length <= 1) return res.status(400).json({ error: "keep at least one building" });
+  db.prepare("DELETE FROM properties WHERE id = ?").run(num(req.params.id));
+  res.status(204).end();
 });
 app.get("/api/meta", (_req, res) => res.json({ categories: CATEGORIES, default_key: DEFAULT_KEY, heating_types: HEATING_TYPES, rules: RULES_VERSION }));
 app.patch("/api/properties/:id/settings", (req, res) => {
@@ -184,6 +195,54 @@ app.patch("/api/tenants/:id", (req, res) => {
   res.json(q.tenant(t.id));
 });
 app.delete("/api/tenants/:id", (req, res) => { db.prepare("DELETE FROM tenants WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
+
+// ---------- lease: upload → AI proposal (not saved) → landlord confirms ----------
+async function leaseFromBuffer(buf: Buffer, originalName: string): Promise<{ extraction: LeaseExtraction; file_name: string }> {
+  const safeName = `${Date.now()}-lease-${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
+  const { text } = await pdfParse(buf);
+  try {
+    return { extraction: await extractLease({ text, fileName: originalName }), file_name: safeName };
+  } catch (e) {
+    const expectedPath = path.resolve("samples", "leases", "expected.json");
+    const expected: Record<string, Partial<LeaseExtraction>> = existsSync(expectedPath) ? JSON.parse(readFileSync(expectedPath, "utf8")) : {};
+    const fb = expected[originalName];
+    if (!fb) throw e;
+    return { extraction: { ...coerceLease(fb), notes: `[sample extraction — AI unavailable] ${fb.notes ?? ""}` }, file_name: safeName };
+  }
+}
+app.post("/api/tenants/:id/lease/extract", upload.single("file"), async (req, res) => {
+  if (!q.tenant(num(req.params.id))) return res.status(404).end();
+  if (!req.file) return res.status(400).json({ error: "file missing" });
+  if (req.file.mimetype !== "application/pdf" && !req.file.originalname.toLowerCase().endsWith(".pdf")) return res.status(400).json({ error: "upload the lease as PDF" });
+  try { res.json(await leaseFromBuffer(req.file.buffer, req.file.originalname)); }
+  catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
+// Demo helper: read the bundled sample lease for this tenant.
+app.post("/api/tenants/:id/lease/sample", async (req, res) => {
+  if (!q.tenant(num(req.params.id))) return res.status(404).end();
+  const f = path.resolve("samples", "leases", "mietvertrag-oeztuerk.pdf");
+  if (!existsSync(f)) return res.status(404).json({ error: "sample lease missing" });
+  try { res.json(await leaseFromBuffer(readFileSync(f), "mietvertrag-oeztuerk.pdf")); }
+  catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
+app.put("/api/tenants/:id/lease", (req, res) => {
+  const t = q.tenant(num(req.params.id));
+  if (!t) return res.status(404).end();
+  const b = req.body ?? {};
+  const cur = leaseOf(t);
+  const c = coerceLease(b);
+  const rules = { prepayment_type: c.prepayment_type, key_overrides: c.key_overrides, excluded_categories: c.excluded_categories, clauses: c.clauses,
+    source_file: typeof b.source_file === "string" ? b.source_file.slice(0, 200) : cur.source_file, confirmed: b.confirmed === true };
+  db.prepare("UPDATE tenants SET lease_json = ? WHERE id = ?").run(JSON.stringify(rules), t.id);
+  res.json(rules);
+});
+app.get("/api/tenants/:id/lease/file", (req, res) => {
+  const t = q.tenant(num(req.params.id));
+  const f = t ? leaseOf(t).source_file : null;
+  if (!f) return res.status(404).end();
+  res.sendFile(path.join(UPLOAD_DIR, f));
+});
 
 // ---------- invoices ----------
 app.get("/api/properties/:id/invoices", (req, res) => {

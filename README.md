@@ -52,6 +52,24 @@ samples/  synthetic provider invoices for the simulated inbox sync
 
 Deploy: one container (`Dockerfile`), mount `/app/data` and `/app/uploads` as volumes. Runs on Coolify.
 
+## German rules covered (rules version: DE 2025-01)
+
+| Rule | Where |
+|---|---|
+| § 2 BetrKV catalogue (17 cost types) incl. partial exclusion of non-allocable items | invoice categories, split field |
+| § 556a BGB allocation keys: area, persons, per unit, metered consumption | allocation engine |
+| Day-exact occupancy; vacancy is the owner's share, never spread over tenants | engine, building reconciliation |
+| HeizkostenV § 7: 50–70 % by consumption (configurable), rest by area; § 11 exemption for owner-occupied two-unit buildings | building settings |
+| Decentral heating (per-flat gas/electric): no heating allocation at all | building settings → check |
+| CO2KostAufG § 7: landlord's CO₂ share from emissions per m² (10 stages), fuel factor by heating type | invoice fields co2/kWh, engine |
+| TKG § 72: cable/TV not allocable for periods from 1 July 2024 | check + exclusion |
+| § 556 (3) BGB: 12-month deadline; § 556 (2) flat rate (Pauschale) → no statement | checks, lease rules |
+| § 560 (4) BGB: suggested new prepayment after the statement | statement + PDF |
+| Lease rules rank above the building default; deviations are booked to the landlord and shown | lease scan → confirm → engine |
+| Unit types: garages excluded from persons/consumption pools | unit settings |
+
+Not yet: interim meter readings on tenant change (§ 9b HeizkostenV), hot-water share of a combined system (§ 9), commercial Vorwegabzug, non-calendar billing periods, actual (instead of contractual) prepayments. NL/EU: same UI, different rule set behind it — planned.
+
 ## Security notes
 
 - The OpenRouter and Brevo keys live only in the server environment; nothing is called from the browser.

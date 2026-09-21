@@ -6,4 +6,4 @@ uploads
 .env
 .git
 *.pdf
-!samples/*.pdf
+!samples/**/*.pdf

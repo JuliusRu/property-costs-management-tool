@@ -93,3 +93,67 @@ export async function extractInvoice(input: { text?: string; imageBase64?: strin
     notes: String(parsed.notes ?? "").slice(0, 500),
   };
 }
+
+// ---------- lease extraction ----------
+export type LeaseExtraction = {
+  tenant_name: string;
+  unit_hint: string;
+  move_in: string | null;
+  move_out: string | null;
+  monthly_prepayment_cents: number;
+  prepayment_type: "vorauszahlung" | "pauschale";
+  key_overrides: Partial<Record<Category, AllocationKey>>;
+  excluded_categories: Category[];
+  clauses: { topic: string; quote: string; page: number | null }[];
+  confidence: number;
+  notes: string;
+};
+
+const LEASE_SYSTEM = `You read German residential lease agreements (Mietverträge) for a landlord's operating-cost tool.
+Return ONLY a JSON object:
+- tenant_name: full name(s) of the tenant(s)
+- unit_hint: how the flat is described (floor, position, e.g. "1. OG links")
+- move_in: ISO date the tenancy starts (Mietbeginn), null if absent
+- move_out: ISO end date for fixed-term leases, else null
+- monthly_prepayment_cents: monthly operating-cost prepayment (Betriebskostenvorauszahlung / Nebenkostenvorauszahlung) in cents — NOT the rent; include heating prepayment if listed separately
+- prepayment_type: "pauschale" if the lease agrees a flat rate (Betriebskostenpauschale, no annual statement), else "vorauszahlung"
+- key_overrides: object mapping cost categories to the allocation key the lease explicitly agrees, ONLY where it deviates from "by area" or is stated explicitly. Categories: ${CATEGORIES.join(", ")}. Keys: area, persons, units, heating, water.
+- excluded_categories: cost categories the lease explicitly does NOT pass on to the tenant (empty if the lease refers to § 2 BetrKV in full)
+- clauses: array of the relevant clauses VERBATIM, each { topic (short English label), quote (exact German wording), page (number or null) }. Include the Betriebskosten clause, the allocation key clause, and any special rule (Sondervereinbarung).
+- confidence: 0..1
+- notes: one or two English sentences on anything ambiguous
+Never invent clauses. If a value is not in the document, use null / empty.`;
+
+export async function extractLease(input: { text: string; fileName: string }): Promise<LeaseExtraction> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
+  const model = process.env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4.5";
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "HTTP-Referer": process.env.APP_URL ?? "http://localhost", "X-Title": "Billnest" },
+    body: JSON.stringify({ model, temperature: 0, messages: [{ role: "system", content: LEASE_SYSTEM }, { role: "user", content: `File: ${input.fileName}\n\n${input.text.slice(0, 60000)}` }] }),
+  });
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as { choices: { message: { content: string } }[] };
+  const raw = (json.choices[0]?.message?.content ?? "").replace(/^```(?:json)?/m, "").replace(/```$/m, "").trim();
+  return coerceLease(JSON.parse(raw));
+}
+
+export function coerceLease(p: Partial<LeaseExtraction>): LeaseExtraction {
+  const keys: AllocationKey[] = ["area", "persons", "units", "heating", "water"];
+  const iso = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+  const overrides: Partial<Record<Category, AllocationKey>> = {};
+  for (const [c, k] of Object.entries(p.key_overrides ?? {})) if ((CATEGORIES as readonly string[]).includes(c) && keys.includes(k as AllocationKey)) overrides[c as Category] = k as AllocationKey;
+  return {
+    tenant_name: String(p.tenant_name ?? "").slice(0, 120),
+    unit_hint: String(p.unit_hint ?? "").slice(0, 120),
+    move_in: iso(p.move_in), move_out: iso(p.move_out),
+    monthly_prepayment_cents: Math.max(0, Math.round(Number(p.monthly_prepayment_cents ?? 0)) || 0),
+    prepayment_type: p.prepayment_type === "pauschale" ? "pauschale" : "vorauszahlung",
+    key_overrides: overrides,
+    excluded_categories: (Array.isArray(p.excluded_categories) ? p.excluded_categories : []).filter((c): c is Category => (CATEGORIES as readonly string[]).includes(String(c))),
+    clauses: (Array.isArray(p.clauses) ? p.clauses : []).slice(0, 12).map((c) => ({ topic: String(c?.topic ?? "").slice(0, 80), quote: String(c?.quote ?? "").slice(0, 1200), page: Number.isFinite(Number(c?.page)) ? Number(c.page) : null })),
+    confidence: Math.min(1, Math.max(0, Number(p.confidence ?? 0.5))),
+    notes: String(p.notes ?? "").slice(0, 500),
+  };
+}
