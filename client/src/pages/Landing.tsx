@@ -146,18 +146,18 @@ function WaitlistForm() {
 /** A faithful mock of what a tenant receives — same numbers as the demo building. */
 function StatementPreview() {
   const lines = [
-    ["Water & sewage", "943,51 € × 38 m³ / 143 m³", "250,72 €"],
-    ["Heating", "30 % by area + 70 % by kWh", "617,64 €"],
-    ["Waste collection", "555,20 € × 1 / 4 persons", "138,80 €"],
+    ["Heating", "30 % by area + 70 % by kWh", "643,08 €"],
+    ["Caretaker", "1.713,60 € × 58 / 178 m² · repair excluded", "558,36 €"],
     ["Property tax", "984,00 € × 58 m² / 178 m²", "320,63 €"],
+    ["Water & sewage", "943,51 € × 38 m³ / 143 m³", "250,72 €"],
   ];
   return (
     <Card className="overflow-hidden shadow-[0_30px_60px_-30px_rgba(16,28,58,0.35)]">
       <div className="flex items-center justify-between border-b border-line px-5 py-3 text-xs text-mute"><span>Statement 2025 · Lindenstraße 12, ground floor</span><span>Lena H.</span></div>
       <div className="px-5 py-5">
         <div className="text-xs font-medium text-mute">You get back</div>
-        <div className="display num text-5xl text-mint">341,25 €</div>
-        <div className="num mt-1 text-xs text-mute">costs 1.458,75 € − prepaid 1.800,00 €</div>
+        <div className="display num text-5xl text-mint">126,63 €</div>
+        <div className="num mt-1 text-xs text-mute">costs 2.153,37 € − prepaid 2.280,00 €</div>
       </div>
       <table className="w-full border-t border-line text-xs">
         <tbody className="divide-y divide-line">

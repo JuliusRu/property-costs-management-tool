@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { db } from "./db.js";
 
 export function resetAndSeed() {
-  db.exec("DELETE FROM statements; DELETE FROM invoices; DELETE FROM tenants; DELETE FROM units; DELETE FROM properties;");
+  db.exec("DELETE FROM statements; DELETE FROM runs; DELETE FROM invoices; DELETE FROM tenants; DELETE FROM units; DELETE FROM properties; DELETE FROM sqlite_sequence;");
   seedIfEmpty();
 }
 
@@ -23,9 +23,9 @@ export function seedIfEmpty() {
   );
   // DG was vacant Jan–Aug 2025: Tom moved in on 1 Sept. That vacancy share must stay with the owner.
   const units = [
-    { label: "EG links", area: 58, persons: 1, heat: 4100, water: 38, tenant: "Lena Hoffmann", email: "lena.hoffmann@example.com", prepay: 15000, moveIn: "2022-04-01" },
+    { label: "EG links", area: 58, persons: 1, heat: 4100, water: 38, tenant: "Lena Hoffmann", email: "lena.hoffmann@example.com", prepay: 19000, moveIn: "2022-04-01" },
     { label: "1. OG", area: 74, persons: 2, heat: 6300, water: 71, tenant: "Familie Öztürk", email: "oeztuerk@example.com", prepay: 21000, moveIn: "2019-10-01" },
-    { label: "DG", area: 46, persons: 1, heat: 3900, water: 34, tenant: "Tom Becker", email: "tom.becker@example.com", prepay: 12000, moveIn: "2025-09-01" },
+    { label: "DG", area: 46, persons: 1, heat: 3900, water: 34, tenant: "Tom Becker", email: "tom.becker@example.com", prepay: 25000, moveIn: "2025-09-01" },
   ];
   for (const u of units) {
     const r = insUnit.run(pid, u.label, u.area, u.persons, u.heat, u.water);

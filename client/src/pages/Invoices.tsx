@@ -106,7 +106,7 @@ function Row({ inv, onEdit, onChange }: { inv: Invoice; onEdit: () => void; onCh
         </select>
       </td>
       <td className="px-5 py-3">
-        {inv.source === "sync" ? <Badge tone="blue">auto-pulled</Badge> : inv.source === "upload" ? <Badge tone="green">uploaded</Badge> : <Badge>manual</Badge>}
+        {inv.source === "sync" ? <Badge tone="blue">auto-pulled</Badge> : inv.source === "upload" ? <Badge tone="green">uploaded</Badge> : inv.source === "sample" ? <Badge tone="amber">sample</Badge> : <Badge>manual</Badge>}
         {conf != null && <div className="mt-1 text-xs text-mute">AI confidence {(conf * 100).toFixed(0)} %</div>}
       </td>
       <td className="num px-5 py-3 text-right font-semibold"><Money cents={inv.amount_cents} /></td>

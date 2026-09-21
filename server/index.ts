@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { db, q, CATEGORIES, DEFAULT_KEY, type Category, type AllocationKey } from "./db.js";
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths } from "./allocation.js";
-import { extractInvoice } from "./ai.js";
+import { extractInvoice, type Extraction } from "./ai.js";
 import { checkPassword, makeSession, requireLandlord } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
@@ -216,12 +216,25 @@ app.post("/api/properties/:id/invoices/sync", async (req, res) => {
   const already = new Set(q.invoices(propertyId).map((i) => i.file_name?.replace(/^\d+-/, "")));
   const imported = [];
   const errors: string[] = [];
+  // Safety net for the demo: if no AI key is configured (or the API fails), fall back to the stored
+  // extraction for the known sample files. Marked as source "sample" so nobody mistakes it for a live AI read.
+  const expectedPath = path.join(dir, "expected.json");
+  const expected: Record<string, Extraction> = existsSync(expectedPath) ? JSON.parse(readFileSync(expectedPath, "utf8")) : {};
+  let usedFallback = false;
   for (const f of readdirSync(dir).filter((f) => f.endsWith(".pdf") && !already.has(f))) {
     try {
       const { extraction, file_name } = await extractFromBuffer(readFileSync(path.join(dir, f)), f, "application/pdf");
       imported.push(insertInvoice(propertyId, { ...extraction, source: "sync", file_name, ai_confidence: extraction.confidence, ai_notes: extraction.notes }));
-    } catch (e) { errors.push(`${f}: ${(e as Error).message}`); }
+    } catch (e) {
+      const fb = expected[f];
+      if (!fb) { errors.push(`${f}: ${(e as Error).message}`); continue; }
+      usedFallback = true;
+      const safeName = `${Date.now()}-${f}`;
+      writeFileSync(path.join(UPLOAD_DIR, safeName), readFileSync(path.join(dir, f)));
+      imported.push(insertInvoice(propertyId, { ...fb, source: "sample", file_name: safeName, ai_confidence: fb.confidence, ai_notes: fb.notes }));
+    }
   }
+  if (usedFallback) errors.push("AI extraction unavailable (no OPENROUTER_API_KEY or API error) — used stored sample extractions instead.");
   res.json({ imported, errors });
 });
 
