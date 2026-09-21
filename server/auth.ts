@@ -37,12 +37,12 @@ export function safeEqual(a: string, b: string): boolean {
 
 // Landlord accounts (single-tenant demo; multi-account comes with Supabase):
 //  1. LANDLORD_EMAIL + LANDLORD_PASSWORD from the environment
-//  2. the jury account for the hackathon — JURY_EMAIL / JURY_PASSWORD, defaults jury@main.nl / Basics.
+//  2. the jury account for the hackathon — JURY_EMAIL / JURY_PASSWORD, defaults jury@main.nl / ILoveCursor.
 //     Disable it after the event with JURY_PASSWORD="" (it is public by design: it is printed in the submission).
 export function landlordAccounts(): { email: string; password: string }[] {
   const list: { email: string; password: string }[] = [];
   if (process.env.LANDLORD_EMAIL && process.env.LANDLORD_PASSWORD) list.push({ email: process.env.LANDLORD_EMAIL, password: process.env.LANDLORD_PASSWORD });
-  const juryPw = process.env.JURY_PASSWORD ?? "Basics";
+  const juryPw = process.env.JURY_PASSWORD ?? "ILoveCursor";
   if (juryPw) list.push({ email: process.env.JURY_EMAIL ?? "jury@main.nl", password: juryPw });
   return list;
 }

@@ -19,7 +19,7 @@ Germany has ~3.9 million private landlords with 1–20 units. Once a year each h
 
 ## Demo / project link
 - Live app: https://invoice.properties
-  - Landlord login: **jury@main.nl / Basics** (built into the server; verified live 21.09. 17:50)
+  - Landlord login: **jury@main.nl / ILoveCursor** (built into the server; verified live 21.09. 17:50)
   - Tenant view: "Portal" button on any statement (or lena.hoffmann@example.com / demo1234)
   - Two demo buildings: "Lindenstraße 12" (vacancy, lease scan, CO₂) and "Musterweg 7" (5 units incl. restaurant, MEA shares, waste for apartments only, water metered per unit, credit note)
 - Code: https://github.com/JuliusRu/property-costs-management-tool  ← set to Public before submitting
