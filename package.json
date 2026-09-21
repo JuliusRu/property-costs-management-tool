@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm:dev:api\" \"npm:dev:web\"",
-    "dev:api": "tsx watch server/index.ts",
+    "dev:api": "API_PORT=3000 tsx watch server/index.ts",
     "dev:web": "npm --prefix client run dev",
     "build": "npm --prefix client run build",
     "start": "node --import tsx server/index.ts",

@@ -218,5 +218,5 @@ if (existsSync(dist)) {
   app.get("/{*path}", (_req, res) => res.sendFile(path.join(dist, "index.html")));
 }
 
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(process.env.API_PORT ?? process.env.PORT ?? 3000);
 app.listen(port, () => console.log(`api listening on :${port}`));
