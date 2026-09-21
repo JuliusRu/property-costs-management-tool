@@ -17,7 +17,7 @@ export type Summary = { year: number; invoiced_cents: number; non_allocable_cent
 export type Check = { level: "BLOCKER" | "WARNING" | "INFO"; code: string; message: string; hint?: string };
 export type Run = { statements: Statement[]; summary: Summary | null; checks: Check[]; created_at: string | null };
 export type Statement = { id: number; tenant_id: number; year: number; total_cents: number; prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number; lines: Line[]; created_at: string; sent_at: string | null };
-export type Extraction = { provider: string; category: string; description: string; amount_cents: number; period_start: string; period_end: string; allocation_key: string; allocable: boolean; non_allocable_cents: number; non_allocable_reason: string; co2_cents: number; energy_kwh: number; confidence: number; notes: string };
+export type Extraction = { provider: string; category: string; description: string; amount_cents: number; period_start: string; period_end: string; allocation_key: string; allocable: boolean; non_allocable_cents: number; non_allocable_reason: string; co2_cents: number; energy_kwh: number; meter_note?: string; confidence: number; notes: string };
 
 export class ApiError extends Error { status: number; constructor(status: number, msg: string) { super(msg); this.status = status; } }
 
@@ -47,7 +47,7 @@ export const api = {
   createInvoice: (pid: number, body: Partial<Invoice> & { allocable?: boolean; ai_confidence?: number; ai_notes?: string }) => req<Invoice>(`/api/properties/${pid}/invoices`, json(body)),
   updateInvoice: (id: number, body: Partial<Invoice> & { allocable?: boolean }) => req<Invoice>(`/api/invoices/${id}`, { ...json(body), method: "PATCH" }),
   deleteInvoice: (id: number) => req<void>(`/api/invoices/${id}`, { method: "DELETE" }),
-  extract: (pid: number, file: File) => { const fd = new FormData(); fd.append("file", file); return req<{ extraction: Extraction; file_name: string }>(`/api/properties/${pid}/invoices/extract`, { method: "POST", body: fd }); },
+  extract: (pid: number, file: File) => { const fd = new FormData(); fd.append("file", file); return req<{ positions: Extraction[]; notes: string; extraction: Extraction; file_name: string }>(`/api/properties/${pid}/invoices/extract`, { method: "POST", body: fd }); },
   sync: (pid: number) => req<{ imported: Invoice[]; errors: string[] }>(`/api/properties/${pid}/invoices/sync`, { method: "POST" }),
   statements: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements?year=${year}`),
   generate: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements/generate`, json({ year })),

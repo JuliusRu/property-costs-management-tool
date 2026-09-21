@@ -11,7 +11,7 @@ export default function Invoices({ property }: { property: Property }) {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [extracting, setExtracting] = useState(false);
-  const [review, setReview] = useState<{ extraction: Extraction; file_name: string; original: string } | null>(null);
+  const [review, setReview] = useState<{ positions: Extraction[]; index: number; notes: string; file_name: string; original: string; booked: number } | null>(null);
   const [edit, setEdit] = useState<Invoice | null>(null);
   const [msg, setMsg] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -32,7 +32,7 @@ export default function Invoices({ property }: { property: Property }) {
 
   const onFile = async (f: File) => {
     setExtracting(true); setMsg("");
-    try { const r = await api.extract(property.id, f); setReview({ ...r, original: f.name }); }
+    try { const r = await api.extract(property.id, f); setReview({ positions: r.positions, index: 0, notes: r.notes, file_name: r.file_name, original: f.name, booked: 0 }); }
     catch (e) { setMsg((e as Error).message); }
     setExtracting(false);
     if (fileRef.current) fileRef.current.value = "";
@@ -76,10 +76,21 @@ export default function Invoices({ property }: { property: Property }) {
         </Card>
       )}
 
-      {review && <InvoiceForm title={t("i.review.title")} sub={t("i.review.sub", { f: review.original, p: (review.extraction.confidence * 100).toFixed(0) })} initial={review.extraction} onClose={() => setReview(null)} onSave={async (e) => {
-        await api.createInvoice(property.id, { ...e, source: "upload", file_name: review.file_name, ai_confidence: e.confidence, ai_notes: e.notes } as never);
-        setReview(null); await load();
-      }} />}
+      {review && (() => {
+        const cur = review.positions[review.index];
+        const multi = review.positions.length > 1;
+        const next = async (booked: boolean) => {
+          const b = review.booked + (booked ? 1 : 0);
+          if (review.index + 1 < review.positions.length) setReview({ ...review, index: review.index + 1, booked: b });
+          else { setReview(null); if (multi) setMsg(t("i.review.booked", { n: b, f: review.original })); }
+          if (booked) await load();
+        };
+        return <InvoiceForm key={review.index} title={t("i.review.title")}
+          sub={<>{multi ? t("i.review.multi", { i: review.index + 1, n: review.positions.length, f: review.original }) : t("i.review.sub", { f: review.original, p: (cur.confidence * 100).toFixed(0) })}{review.notes && review.index === 0 ? <> · {review.notes}</> : null}</>}
+          initial={{ ...cur, notes: [cur.notes, cur.meter_note].filter(Boolean).join(" ") }} onClose={() => setReview(null)}
+          onSkip={multi ? () => next(false) : undefined}
+          onSave={async (e) => { await api.createInvoice(property.id, { ...e, source: "upload", file_name: review.file_name, ai_confidence: e.confidence, ai_notes: e.notes } as never); await next(true); }} />;
+      })()}
       {edit && <InvoiceForm title={t("i.edit.title")} initial={{ ...edit, allocable: !!edit.allocable, description: edit.description ?? "", non_allocable_reason: edit.non_allocable_reason ?? "", confidence: edit.ai_confidence ?? 1, notes: edit.ai_notes ?? "" }} onClose={() => setEdit(null)} onDelete={async () => { await api.deleteInvoice(edit.id); setEdit(null); await load(); }} onSave={async (e) => {
         await api.updateInvoice(edit.id, e as never); setEdit(null); await load();
       }} />}
@@ -119,7 +130,7 @@ function Row({ inv, onEdit, onChange }: { inv: Invoice; onEdit: () => void; onCh
   );
 }
 
-export function InvoiceForm({ title, sub, initial, onClose, onSave, onDelete }: { title: string; sub?: React.ReactNode; initial: Extraction; onClose: () => void; onSave: (e: Extraction) => Promise<void>; onDelete?: () => Promise<void> }) {
+export function InvoiceForm({ title, sub, initial, onClose, onSave, onDelete, onSkip }: { title: string; sub?: React.ReactNode; initial: Extraction; onClose: () => void; onSave: (e: Extraction) => Promise<void>; onDelete?: () => Promise<void>; onSkip?: () => void }) {
   const t = useT();
   const [e, setE] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -154,7 +165,7 @@ export function InvoiceForm({ title, sub, initial, onClose, onSave, onDelete }: 
         </div>
       </div>
       <div className="mt-5 flex items-center justify-between">
-        {onDelete ? <Button variant="danger" size="sm" onClick={async () => { if (confirm(t("i.delete.confirm"))) await onDelete(); }}>{t("common.delete")}</Button> : <span />}
+        {onDelete ? <Button variant="danger" size="sm" onClick={async () => { if (confirm(t("i.delete.confirm"))) await onDelete(); }}>{t("common.delete")}</Button> : onSkip ? <Button variant="ghost" size="sm" onClick={onSkip}>{t("i.review.skip")}</Button> : <span />}
         <div className="flex gap-2">
           <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
           <Button disabled={saving || allocablePart < 0} onClick={async () => { setSaving(true); await onSave(e); setSaving(false); }}>{saving ? <Spinner /> : null} {onDelete ? t("common.save") : t("i.f.book")}</Button>

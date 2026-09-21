@@ -8,14 +8,14 @@ import { createRequire } from "node:module";
 import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, DOC_KINDS, newAccessCode, settingsOf, leaseOf, type Category, type AllocationKey, type Tenant, type HeatingType, type DocKind } from "./db.js";
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
-import { extractInvoice, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
+import { extractInvoice, extractInvoices, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
 import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession, hashPassword, verifyPassword } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
 
 // pdf-parse is CommonJS; createRequire keeps it working under ESM.
 const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
+const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string; numpages: number }>;
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -331,26 +331,37 @@ app.get("/api/invoices/:id/file", (req, res) => {
   res.sendFile(path.join(UPLOAD_DIR, inv.file_name));
 });
 
-async function extractFromBuffer(buf: Buffer, originalName: string, mime: string) {
+/** Text layer usable? Scans often have none, or OCR garbage. Below ~40 chars per page we hand the PDF itself to the model. */
+async function extractAllFromBuffer(buf: Buffer, originalName: string, mime: string): Promise<{ positions: Extraction[]; notes: string; file_name: string }> {
   const safeName = `${Date.now()}-${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
   writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
-  let extraction;
+  let result;
   if (mime === "application/pdf" || originalName.toLowerCase().endsWith(".pdf")) {
-    const { text } = await pdfParse(buf);
-    extraction = await extractInvoice({ text, fileName: originalName });
+    let text = "", pages = 1;
+    try { const r = await pdfParse(buf); text = r.text; pages = r.numpages || 1; } catch { /* no text layer */ }
+    const usable = text.replace(/\s+/g, " ").trim().length >= 40 * pages;
+    result = usable ? await extractInvoices({ text, fileName: originalName }) : await extractInvoices({ pdfBase64: buf.toString("base64"), fileName: originalName });
   } else if (mime.startsWith("image/")) {
-    extraction = await extractInvoice({ imageBase64: buf.toString("base64"), mime, fileName: originalName });
+    result = await extractInvoices({ imageBase64: buf.toString("base64"), mime, fileName: originalName });
   } else {
     throw new Error("unsupported file type — upload a PDF or image");
   }
-  return { extraction, file_name: safeName };
+  return { ...result, file_name: safeName };
+}
+async function extractFromBuffer(buf: Buffer, originalName: string, mime: string) {
+  const r = await extractAllFromBuffer(buf, originalName, mime);
+  if (!r.positions.length) throw new Error("no cost position found in the document");
+  return { extraction: { ...r.positions[0], notes: [r.positions[0].notes, r.notes].filter(Boolean).join(" ") }, file_name: r.file_name };
 }
 
-// Upload one invoice → AI extraction → returned for review (not saved yet).
+// Upload one file → AI extraction → ALL positions returned for review (not saved yet).
 app.post("/api/properties/:id/invoices/extract", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "file missing" });
-  try { res.json(await extractFromBuffer(req.file.buffer, req.file.originalname, req.file.mimetype)); }
-  catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  try {
+    const r = await extractAllFromBuffer(req.file.buffer, req.file.originalname, req.file.mimetype);
+    if (!r.positions.length) return res.status(422).json({ error: "no cost position found in the document" });
+    res.json({ positions: r.positions, notes: r.notes, file_name: r.file_name, extraction: r.positions[0] });
+  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
 
 // "Inbox sync": simulates the automated job that pulls provider invoices. Reads samples/ and books everything.
@@ -364,19 +375,19 @@ app.post("/api/properties/:id/invoices/sync", async (req, res) => {
   // Safety net for the demo: if no AI key is configured (or the API fails), fall back to the stored
   // extraction for the known sample files. Marked as source "sample" so nobody mistakes it for a live AI read.
   const expectedPath = path.join(dir, "expected.json");
-  const expected: Record<string, Extraction> = existsSync(expectedPath) ? JSON.parse(readFileSync(expectedPath, "utf8")) : {};
+  const expected: Record<string, Extraction | Extraction[]> = existsSync(expectedPath) ? JSON.parse(readFileSync(expectedPath, "utf8")) : {};
   let usedFallback = false;
   for (const f of readdirSync(dir).filter((f) => f.endsWith(".pdf") && !already.has(f))) {
     try {
-      const { extraction, file_name } = await extractFromBuffer(readFileSync(path.join(dir, f)), f, "application/pdf");
-      imported.push(insertInvoice(propertyId, { ...extraction, source: "sync", file_name, ai_confidence: extraction.confidence, ai_notes: extraction.notes }));
+      const r = await extractAllFromBuffer(readFileSync(path.join(dir, f)), f, "application/pdf");
+      for (const p of r.positions) imported.push(insertInvoice(propertyId, { ...p, source: "sync", file_name: r.file_name, ai_confidence: p.confidence, ai_notes: [p.notes, p.meter_note].filter(Boolean).join(" ") }));
     } catch (e) {
       const fb = expected[f];
       if (!fb) { errors.push(`${f}: ${(e as Error).message}`); continue; }
       usedFallback = true;
       const safeName = `${Date.now()}-${f}`;
       writeFileSync(path.join(UPLOAD_DIR, safeName), readFileSync(path.join(dir, f)));
-      imported.push(insertInvoice(propertyId, { ...fb, source: "sample", file_name: safeName, ai_confidence: fb.confidence, ai_notes: fb.notes }));
+      for (const p of Array.isArray(fb) ? fb : [fb]) imported.push(insertInvoice(propertyId, { ...p, source: "sample", file_name: safeName, ai_confidence: p.confidence, ai_notes: p.notes }));
     }
   }
   if (usedFallback) errors.push("AI extraction unavailable (no OPENROUTER_API_KEY or API error) — used stored sample extractions instead.");

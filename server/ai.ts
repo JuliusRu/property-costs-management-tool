@@ -13,64 +13,66 @@ export type Extraction = {
   non_allocable_reason: string;
   co2_cents: number;
   energy_kwh: number;
+  meter_note: string;
   confidence: number;
   notes: string;
 };
 
-const SYSTEM = `You extract data from German utility / operating-cost invoices (Nebenkosten, Betriebskosten) for a landlord.
-Return ONLY a JSON object with these fields:
-- provider: company that issued the invoice
-- category: one of ${CATEGORIES.join(", ")}
-- description: short label, e.g. "Wasser/Abwasser 2025"
-- amount_cents: gross total in euro cents (integer). Use the amount the landlord actually has to pay.
-- period_start, period_end: ISO dates (YYYY-MM-DD) of the billing period. If only a year is given use Jan 1 – Dec 31.
-- allocation_key: one of area, persons, units, heating, water — how this cost is distributed to tenants under German BetrKV/HeizkostenV practice
-- allocable: boolean — false if the WHOLE invoice is NOT allocable to tenants under §2 BetrKV (e.g. pure Verwaltungskosten, Instandhaltung, Bankgebühren)
-- non_allocable_cents: integer — if the invoice MIXES allocable and non-allocable items (e.g. a caretaker invoice that also bills a repair), the gross amount of the non-allocable items in cents (include their share of VAT). 0 if none.
-- non_allocable_reason: short English reason for the excluded part, empty string if none
-- co2_cents: for heating fuel invoices (gas, oil, district heating): the CO₂ price component in cents if the invoice states it ("CO2-Kosten", "CO2-Preis", "Emissionskosten"), else 0
-- energy_kwh: for heating fuel invoices: delivered energy in kWh (number), else 0
-- if the invoice mixes water/sewage (by consumption) with rainwater/Niederschlagswasser (by area), say so in notes — the landlord may split it
+const SYSTEM = `You extract cost positions from documents a German landlord receives for a rental building: utility invoices, municipal fee notices (Gebührenbescheid), service invoices. A file may contain SEVERAL documents (a scanned stack) and one document may contain SEVERAL cost types (e.g. a municipal notice with water, sewage and rainwater). Scanned pages may repeat — treat repeated pages as ONE document.
+Return ONLY a JSON object: { "positions": [ ... ], "notes": "..." } where each position has:
+- provider: company/authority that issued the document
+- category: one of ${CATEGORIES.join(", ")}. Water and sewage (Schmutzwasser) go together as water_sewage; rainwater (Niederschlagswasser) is a SEPARATE position "rainwater"; gas/oil/district heating is "heating".
+- description: short label, e.g. "Wasser + Abwasser 2025"
+- amount_cents: the GROSS charge for the billing period in cents, VAT included. This is the "Abrechnung"/"Rechnungsbetrag"/"Bruttobetrag" for the period — NEVER the refund or additional payment (Erstattung/Nachzahlung), NEVER prepayments already made (Abschläge/Vorauszahlungen/bisherige Festsetzung), NEVER next year's instalments.
+- period_start, period_end: ISO dates of the billing period. Year only → Jan 1 – Dec 31.
+- allocation_key: area | persons | units | heating | water — the usual key under BetrKV/HeizkostenV practice (rainwater → area, water/sewage → water if sub-meters exist, heating → heating)
+- allocable: false only if the WHOLE position is not allocable under § 2 BetrKV
+- non_allocable_cents: gross amount of non-allocable items mixed into this position (repairs, admin), else 0
+- non_allocable_reason: short English reason or ""
+- co2_cents: for heating fuel documents: the CO₂ price component ("CO2-Preis", "CO2-Kosten") as GROSS cents (add the document's VAT rate if the component is shown net), else 0
+- energy_kwh: delivered energy in kWh for heating fuel, else 0
+- meter_note: "" or a short English note if the document shows only a main meter (Hauptzähler) and no sub-meters — then per-unit consumption is not available
 - confidence: 0..1
-- notes: one sentence, in English, on anything the landlord should double-check
+notes: one or two English sentences about anything the landlord should check (duplicated pages, ambiguous amounts, two owners, etc.).
 No prose, no markdown fences.`;
 
-export async function extractInvoice(input: { text?: string; imageBase64?: string; mime?: string; fileName: string }): Promise<Extraction> {
+type ModelInput = { text?: string; imageBase64?: string; pdfBase64?: string; mime?: string; fileName: string };
+
+async function callModel(system: string, input: ModelInput, maxText = 20000): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
   const model = process.env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4.5";
-
-  const content: unknown[] = [];
-  if (input.text) content.push({ type: "text", text: `File name: ${input.fileName}\n\nInvoice text:\n${input.text.slice(0, 20000)}` });
-  if (input.imageBase64) {
-    content.push({ type: "text", text: `File name: ${input.fileName}. Read the invoice in the image.` });
-    content.push({ type: "image_url", image_url: { url: `data:${input.mime ?? "image/png"};base64,${input.imageBase64}` } });
-  }
-
+  const content: unknown[] = [{ type: "text", text: `File name: ${input.fileName}` }];
+  if (input.text) content.push({ type: "text", text: `Document text:\n${input.text.slice(0, maxText)}` });
+  if (input.imageBase64) content.push({ type: "image_url", image_url: { url: `data:${input.mime ?? "image/png"};base64,${input.imageBase64}` } });
+  // Scans without a usable text layer: hand the PDF itself to the model (OpenRouter file input; the model reads the pages).
+  if (input.pdfBase64) content.push({ type: "file", file: { filename: input.fileName, file_data: `data:application/pdf;base64,${input.pdfBase64}` } });
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.APP_URL ?? "http://localhost",
-      "X-Title": "Property Costs Management Tool",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      messages: [
-        { role: "system", content: SYSTEM },
-        { role: "user", content },
-      ],
-    }),
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "HTTP-Referer": process.env.APP_URL ?? "http://localhost", "X-Title": "Billnest" },
+    body: JSON.stringify({ model, temperature: 0, messages: [{ role: "system", content: system }, { role: "user", content }], ...(input.pdfBase64 ? { plugins: [{ id: "file-parser", pdf: { engine: "native" } }] } : {}) }),
   });
   if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
   const json = (await res.json()) as { choices: { message: { content: string } }[] };
-  const raw = json.choices[0]?.message?.content ?? "";
-  const cleaned = raw.replace(/^```(?:json)?/m, "").replace(/```$/m, "").trim();
-  const parsed = JSON.parse(cleaned) as Partial<Extraction>;
+  return (json.choices[0]?.message?.content ?? "").replace(/^```(?:json)?/m, "").replace(/```$/m, "").trim();
+}
 
-  // Never trust the model blindly — coerce into our enums and sane defaults.
+/** Reads one file and returns every cost position found in it (a stack of scans → several). */
+export async function extractInvoices(input: ModelInput): Promise<{ positions: Extraction[]; notes: string }> {
+  const raw = await callModel(SYSTEM, input);
+  const parsed = JSON.parse(raw) as { positions?: Partial<Extraction>[]; notes?: string } | Partial<Extraction>;
+  const list = Array.isArray((parsed as { positions?: unknown }).positions) ? (parsed as { positions: Partial<Extraction>[] }).positions : [parsed as Partial<Extraction>];
+  const notes = String((parsed as { notes?: string }).notes ?? "").slice(0, 500);
+  return { positions: list.map(coerceExtraction).filter((p) => p.amount_cents > 0 || p.provider), notes };
+}
+export async function extractInvoice(input: ModelInput): Promise<Extraction> {
+  const { positions, notes } = await extractInvoices(input);
+  if (!positions.length) throw new Error("no cost position found in the document");
+  return { ...positions[0], notes: [positions[0].notes, notes].filter(Boolean).join(" ") };
+}
+
+// Never trust the model blindly — coerce into our enums and sane defaults.
+export function coerceExtraction(parsed: Partial<Extraction>): Extraction {
   const category = (CATEGORIES as readonly string[]).includes(parsed.category ?? "") ? (parsed.category as Category) : "other";
   const keys: AllocationKey[] = ["area", "persons", "units", "heating", "water"];
   const allocation_key = keys.includes(parsed.allocation_key as AllocationKey) ? (parsed.allocation_key as AllocationKey) : DEFAULT_KEY[category];
@@ -80,15 +82,16 @@ export async function extractInvoice(input: { text?: string; imageBase64?: strin
     provider: String(parsed.provider ?? "Unknown").slice(0, 120),
     category,
     description: String(parsed.description ?? "").slice(0, 200),
-    amount_cents: Math.max(0, Math.round(Number(parsed.amount_cents ?? 0))),
+    amount_cents: Math.max(0, Math.round(Number(parsed.amount_cents ?? 0)) || 0),
     period_start: iso(parsed.period_start, `${year}-01-01`),
     period_end: iso(parsed.period_end, `${year}-12-31`),
     allocation_key,
     allocable: parsed.allocable !== false,
-    non_allocable_cents: Math.max(0, Math.round(Number(parsed.non_allocable_cents ?? 0))),
+    non_allocable_cents: Math.max(0, Math.round(Number(parsed.non_allocable_cents ?? 0)) || 0),
     non_allocable_reason: String(parsed.non_allocable_reason ?? "").slice(0, 200),
     co2_cents: Math.max(0, Math.round(Number(parsed.co2_cents ?? 0)) || 0),
     energy_kwh: Math.max(0, Number(parsed.energy_kwh ?? 0) || 0),
+    meter_note: String(parsed.meter_note ?? "").slice(0, 200),
     confidence: Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5))),
     notes: String(parsed.notes ?? "").slice(0, 500),
   };
