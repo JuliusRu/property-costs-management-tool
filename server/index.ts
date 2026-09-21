@@ -498,6 +498,50 @@ app.post("/api/documents/:id/link-invoice", (req, res) => {
   res.json(q.document(d.id));
 });
 
+// ---------- live preview: what each unit would carry this year (no statements written) ----------
+app.get("/api/properties/:id/preview", (req, res) => {
+  const pid = num(req.params.id), year = num(req.query.year);
+  const property = q.property(pid);
+  if (!property) return res.status(404).end();
+  const { statements, summary } = computeStatements(q.units(pid), q.tenants(pid), q.invoices(pid, year), year, settingsOf(property), new Date(), q.paymentsForProperty(pid));
+  const units = q.units(pid).map((u) => {
+    const own = statements.filter((s) => s.unit.id === u.id);
+    return { unit_id: u.id, tenants_cents: own.reduce((a, s) => a + s.total_cents, 0), prepaid_cents: own.reduce((a, s) => a + s.prepaid_cents, 0), balance_cents: own.reduce((a, s) => a + s.balance_cents, 0) };
+  });
+  res.json({ year, summary, units });
+});
+
+// ---------- prepayments actually received ----------
+app.get("/api/tenants/:id/payments", (req, res) => res.json(q.payments(num(req.params.id))));
+app.post("/api/tenants/:id/payments", (req, res) => {
+  const t = q.tenant(num(req.params.id));
+  if (!t) return res.status(404).end();
+  const b = req.body ?? {};
+  const on = isoOrNull(b.paid_on);
+  const cents = Math.round(Number(b.amount_cents));
+  if (!on || !Number.isFinite(cents)) return res.status(400).json({ error: "date and amount required" });
+  const r = db.prepare("INSERT INTO payments (tenant_id, paid_on, amount_cents, note) VALUES (?, ?, ?, ?)").run(t.id, on, cents, b.note ? String(b.note).slice(0, 200) : null);
+  res.status(201).json(db.prepare("SELECT * FROM payments WHERE id = ?").get(Number(r.lastInsertRowid)));
+});
+// Convenience: book the contractual monthly amount for every month of the year the tenant lived there.
+app.post("/api/tenants/:id/payments/fill-year", (req, res) => {
+  const t = q.tenant(num(req.params.id));
+  if (!t) return res.status(404).end();
+  const year = num(req.body?.year);
+  const existing = q.payments(t.id).filter((p) => p.paid_on.startsWith(String(year)));
+  if (existing.length) return res.status(409).json({ error: "payments for this year already exist" });
+  const ins = db.prepare("INSERT INTO payments (tenant_id, paid_on, amount_cents, note) VALUES (?, ?, ?, ?)");
+  let n = 0;
+  for (let m = 1; m <= 12; m++) {
+    const d = `${year}-${String(m).padStart(2, "0")}-01`;
+    if (t.move_in && d < t.move_in.slice(0, 8) + "01") continue;
+    if (t.move_out && d > t.move_out) continue;
+    ins.run(t.id, d, t.monthly_prepayment_cents, "Vorauszahlung"); n++;
+  }
+  res.json({ inserted: n, payments: q.payments(t.id) });
+});
+app.delete("/api/payments/:id", (req, res) => { db.prepare("DELETE FROM payments WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
+
 // ---------- statements ----------
 const withLines = (s: ReturnType<typeof q.statements>[number]) => ({ ...s, lines: JSON.parse(s.lines_json), lines_json: undefined });
 const runPayload = (propertyId: number, year: number) => {
@@ -516,7 +560,7 @@ app.post("/api/properties/:id/statements/generate", (req, res) => {
   if (!Number.isFinite(year)) return res.status(400).json({ error: "year missing" });
   const property = q.property(propertyId);
   if (!property) return res.status(404).end();
-  const { statements, summary, checks } = computeStatements(q.units(propertyId), q.tenants(propertyId), q.invoices(propertyId, year), year, settingsOf(property));
+  const { statements, summary, checks } = computeStatements(q.units(propertyId), q.tenants(propertyId), q.invoices(propertyId, year), year, settingsOf(property), new Date(), q.paymentsForProperty(propertyId));
   const up = db.prepare(
     `INSERT INTO statements (tenant_id, year, total_cents, prepaid_cents, balance_cents, suggested_prepayment_cents, lines_json) VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(tenant_id, year) DO UPDATE SET total_cents=excluded.total_cents, prepaid_cents=excluded.prepaid_cents,
@@ -536,7 +580,8 @@ function buildTenantStatement(sid: number) {
   const s = q.statement(sid);
   if (!s) return null;
   const tenant = q.tenant(s.tenant_id)!, unit = q.unit(tenant.unit_id)!, property = q.property(unit.property_id)!;
-  return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), balance_cents: s.balance_cents, suggested_prepayment_cents: s.suggested_prepayment_cents } };
+  const payments = q.payments(tenant.id).filter((p) => p.paid_on.startsWith(String(s.year)));
+  return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), prepaid_from_payments: payments.length > 0, payments, balance_cents: s.balance_cents, suggested_prepayment_cents: s.suggested_prepayment_cents } };
 }
 
 // Manual payment tracking: the landlord records that the tenant paid or that the refund was transferred.

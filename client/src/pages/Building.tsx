@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useRef } from "react";
-import { api, CATEGORIES, HEATING_TYPES, KEYS, type Invoice, type Lease, type LeaseExtraction, type Property, type Settings, type Tenant, type TenantRow, type Unit, type UnitType } from "../api";
+import { api, CATEGORIES, HEATING_TYPES, KEYS, type Extraction, type Invoice, type Lease, type LeaseExtraction, type Payment, type Property, type Settings, type Summary, type Tenant, type TenantRow, type Unit, type UnitType } from "../api";
+import { InvoiceForm } from "./Invoices";
 import { Badge, Button, Card, Field, inputCls, Modal, Money, Notice, PageTitle, Spinner } from "../ui";
 import { useT, type Key } from "../i18n";
 import { DataTable, type Column } from "../table";
@@ -16,7 +17,17 @@ export default function Building({ property, onChange }: { property: Property; o
   const [editTenant, setEditTenant] = useState<(Partial<Tenant> & { unit_id: number }) | null>(null);
   const [editProp, setEditProp] = useState(false);
   const [settings, setSettings] = useState(false);
-  useEffect(() => { api.invoices(property.id).then(setInvoices); }, [property.id]);
+  const [preview, setPreview] = useState<{ summary: Summary; units: { unit_id: number; tenants_cents: number; prepaid_cents: number; balance_cents: number }[] } | null>(null);
+  const [addInv, setAddInv] = useState<Extraction | null>(null);
+  const [editInv, setEditInv] = useState<Invoice | null>(null);
+  const [review, setReview] = useState<{ positions: Extraction[]; index: number; file_name: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const reloadCosts = () => Promise.all([api.invoices(property.id).then(setInvoices), api.preview(property.id, YEAR).then(setPreview).catch(() => setPreview(null))]);
+  useEffect(() => { reloadCosts(); }, [property.id, property.units.length, property.tenants.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  const blankInvoice = (): Extraction => ({ provider: "", category: "insurance", description: "", amount_cents: 0, period_start: `${YEAR}-01-01`, period_end: `${YEAR}-12-31`, allocation_key: "area", pool: "all", allocable: true, non_allocable_cents: 0, non_allocable_reason: "", co2_cents: 0, energy_kwh: 0, confidence: 1, notes: "" });
+  const shareOf = (unitId: number) => preview?.units.find((u) => u.unit_id === unitId);
+  const ownerShare = preview ? preview.summary.non_allocable_cents + preview.summary.owner_vacancy_cents + preview.summary.owner_lease_diff_cents : 0;
 
   const thisYear = invoices.filter((i) => i.period_start.startsWith(String(YEAR)));
   // one row per tenancy; a unit without tenants gets one "vacant" row
@@ -29,11 +40,12 @@ export default function Building({ property, onChange }: { property: Property; o
       <PageTitle title={property.name} sub={property.address}
         right={<div className="flex gap-2"><Button variant="ghost" onClick={() => setSettings(true)}>{t("b.settings")}</Button><Button variant="ghost" onClick={() => setEditProp(true)}>{t("b.edit")}</Button><Button onClick={() => setEditUnit({})}>{t("b.addUnit")}</Button></div>} />
 
-      <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-5">
         <Stat label={t("b.units")} value={String(property.units.length)} sub={t("b.total", { n: totalArea })} />
         <Stat label={t("b.invoices", { y: YEAR })} value={String(thisYear.length)} sub={t("b.readByAi", { n: thisYear.filter((i) => i.source !== "manual").length })} />
         <Stat label={t("b.allocable", { y: YEAR })} value={<Money cents={total} />} sub={t("b.whole")} />
-        <Stat label={t("b.heat")} value={<span className="text-base">{(t(`set.heating.${property.settings.heating_type}` as Key).split(" — ")[1] ?? "").split(" (")[0]}</span>} sub={property.settings.heating_type === "decentral" ? "—" : property.settings.heizkv_exempt ? "§ 11 HeizkostenV" : `${Math.round(property.settings.consumption_share * 100)} % kWh / ${100 - Math.round(property.settings.consumption_share * 100)} % m²`} />
+        <Stat label={t("b.stat.owner", { y: YEAR })} value={<Money cents={ownerShare} />} sub={t("b.stat.owner.sub")} />
+        <Stat label={t("b.heat")} value={<span className="text-base">{property.settings.heating_type === "decentral" ? t(`set.heating.decentral` as Key).split(" — ")[0] : (t(`set.heating.${property.settings.heating_type}` as Key).split(" — ")[1] ?? "").split(" (")[0]}</span>} sub={property.settings.heating_type === "decentral" ? "—" : property.settings.heizkv_exempt ? "§ 11 HeizkostenV" : `${Math.round(property.settings.consumption_share * 100)} % kWh / ${100 - Math.round(property.settings.consumption_share * 100)} % m²`} />
       </div>
 
       <Card>
@@ -43,14 +55,42 @@ export default function Building({ property, onChange }: { property: Property; o
         </div>
         <DataTable<OccRow> rows={occRows} rowKey={(r) => `${r.unit.id}-${r.tenant?.id ?? "v"}`} minWidth={900} defaultSort={{ key: "unit", dir: 1 }} emptyText={t("b.noUnits")} rowClass={(r) => (!r.tenant ? "bg-sun-soft/40" : "")}
           columns={[
-            { key: "unit", label: t("b.th.unit"), sort: (r) => r.unit.label, render: (r) => <><button className="text-left font-semibold hover:text-cobalt" onClick={() => setEditUnit(r.unit)}>{r.unit.label}</button> {r.unit.unit_type !== "residential" && <Badge>{t(`unit.${r.unit.unit_type}` as Key)}</Badge>}<div className="text-xs text-mute">{r.unit.area_sqm} m² · {r.unit.persons} {r.unit.persons === 1 ? t("common.person") : t("common.persons")}{r.unit.mea > 0 && <> · {r.unit.mea.toLocaleString("de-DE", { minimumFractionDigits: 3 })} MEA</>}</div><div className="text-xs text-mute">{r.unit.heating_kwh.toLocaleString("de-DE")} kWh · {r.unit.water_m3} m³</div></> },
+            { key: "unit", label: t("b.th.unit"), width: "18%", sort: (r) => r.unit.label, render: (r) => <><button className="whitespace-nowrap text-left font-semibold hover:text-cobalt" onClick={() => setEditUnit(r.unit)}>{r.unit.label}</button> {r.unit.unit_type !== "residential" && <Badge>{t(`unit.${r.unit.unit_type}` as Key)}</Badge>}<div className="text-xs text-mute">{r.unit.area_sqm} m² · {r.unit.persons} {r.unit.persons === 1 ? t("common.person") : t("common.persons")}{r.unit.mea > 0 && <> · {r.unit.mea.toLocaleString("de-DE", { minimumFractionDigits: 3 })} MEA</>}</div><div className="text-xs text-mute">{r.unit.heating_kwh.toLocaleString("de-DE")} kWh · {r.unit.water_m3} m³</div></> },
             { key: "tenant", label: t("b.th.tenant"), sort: (r) => r.tenant?.name ?? "", render: (r) => r.tenant ? <><button className="font-medium hover:text-cobalt" onClick={() => setEditTenant(r.tenant!)}>{r.tenant.name}</button><div className="text-xs text-mute">{r.tenant.email}</div><div className="mt-1 flex flex-wrap gap-1">{hasRules(r.tenant.lease) && <Badge tone={r.tenant.lease.confirmed ? "green" : "red"}>{r.tenant.lease.confirmed ? t("lease.confirmed") : t("lease.unconfirmed")}</Badge>}<Badge tone={r.tenant.registered ? "green" : "slate"}>{r.tenant.registered ? t("b.tenant.registered") : t("b.tenant.notRegistered")}</Badge></div></> : <Badge tone="amber">{t("b.vacant")}</Badge> },
             { key: "period", label: t("b.th.period"), sort: (r) => r.tenant?.move_in ?? "", nowrap: true, render: (r) => <span className="num text-xs text-mute">{r.tenant ? <>{r.tenant.move_in ? t("tn.since", { d: r.tenant.move_in }) : "—"}{r.tenant.move_out && <div>{t("tn.until", { d: r.tenant.move_out })}</div>}</> : "—"}</span> },
             { key: "prepay", label: t("b.th.prepay"), align: "right", sort: (r) => r.tenant?.monthly_prepayment_cents ?? null, render: (r) => r.tenant ? <><Money cents={r.tenant.monthly_prepayment_cents} /><span className="text-xs text-mute">/{t("common.month")}</span></> : "—" },
-            { key: "occ", label: t("b.th.occupancy", { y: YEAR }), width: "26%", render: (r) => <OccupancyBar tenants={r.tenant ? [r.tenant] : []} year={YEAR} /> },
+            { key: "share", label: t("b.th.share", { y: YEAR }), align: "right", sort: (r) => shareOf(r.unit.id)?.tenants_cents ?? null, render: (r) => { const sh = shareOf(r.unit.id); return r.tenant && sh ? <><Money cents={sh.tenants_cents} /><div className="text-xs"><Money cents={sh.balance_cents} signed /></div></> : <span className="text-mute">—</span>; } },
+            { key: "occ", label: t("b.th.occupancy", { y: YEAR }), width: "22%", render: (r) => <OccupancyBar tenants={r.tenant ? [r.tenant] : []} year={YEAR} /> },
             { key: "actions", label: "", align: "right", nowrap: true, render: (r) => r.first ? <Button size="sm" variant="ghost" onClick={() => setEditTenant({ unit_id: r.unit.id })}>{t("b.addTenant")}</Button> : null },
           ] satisfies Column<OccRow>[]} />
       </Card>
+
+      <Card className="mt-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <div><div className="font-semibold">{t("b.costs.h", { y: YEAR })}</div><div className="text-xs text-mute">{t("b.costs.sub")}</div></div>
+          <div className="flex gap-2">
+            <input ref={fileRef} type="file" accept="application/pdf,image/*" className="hidden" onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; setBusy(true); try { const r = await api.extract(property.id, f); setReview({ positions: r.positions, index: 0, file_name: r.file_name }); } catch (err) { alert((err as Error).message); } setBusy(false); e.target.value = ""; }} />
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? <Spinner /> : null} {t("b.costs.upload")}</Button>
+            <Button size="sm" onClick={() => setAddInv(blankInvoice())}>{t("b.costs.add")}</Button>
+          </div>
+        </div>
+        <DataTable<Invoice> rows={thisYear} rowKey={(i) => i.id} minWidth={820} defaultSort={{ key: "category", dir: 1 }} dense emptyText={t("b.costs.empty", { y: YEAR })} rowClass={(i) => (!i.allocable ? "opacity-60" : "")}
+          columns={[
+            { key: "provider", label: t("i.th.provider"), sort: (i) => i.provider, render: (i) => <><button className="text-left font-semibold hover:text-cobalt" onClick={() => setEditInv(i)}>{i.provider}</button><div className="text-xs text-mute">{i.description}</div></> },
+            { key: "category", label: t("i.th.category"), sort: (i) => t(`cat.${i.category}` as Key), render: (i) => t(`cat.${i.category}` as Key) },
+            { key: "scope", label: t("i.th.scope"), sort: (i) => (i.unit_id ? property.units.find((u) => u.id === i.unit_id)?.label ?? "" : ""), render: (i) => i.unit_id ? <Badge tone="blue">{t("i.scope.unit", { l: property.units.find((u) => u.id === i.unit_id)?.label ?? "" })}</Badge> : <span className="text-mute">{t("i.scope.building")}</span> },
+            { key: "key", label: t("i.th.key"), sort: (i) => t(`key.${i.allocation_key}` as Key), render: (i) => <>{i.unit_id ? "—" : t(`key.${i.allocation_key}` as Key)}{!i.unit_id && i.pool !== "all" && <div className="text-xs text-cobalt-deep">{t(`pool.${i.pool}` as Key)}</div>}</> },
+            { key: "amount", label: t("i.th.amount"), align: "right", sort: (i) => i.amount_cents, render: (i) => <span className="font-semibold"><Money cents={i.amount_cents} /></span> },
+          ] satisfies Column<Invoice>[]}
+          footer={<tr className="font-bold"><td className="px-4 py-3" colSpan={4}>{t("i.foot.allocable")}</td><td className="num px-4 py-3 text-right"><Money cents={total} /></td></tr>} />
+        <div className="border-t border-line px-4 py-2 text-xs"><Link to="/app/invoices" className="font-semibold text-cobalt hover:underline">{t("b.costs.all")} →</Link></div>
+      </Card>
+
+      {addInv && <InvoiceForm units={property.units} title={t("i.f.manual.title")} initial={addInv} onClose={() => setAddInv(null)} onSave={async (e) => { await api.createInvoice(property.id, { ...e, source: "manual" } as never); setAddInv(null); await reloadCosts(); }} />}
+      {editInv && <InvoiceForm units={property.units} title={t("i.edit.title")} initial={{ ...editInv, allocable: !!editInv.allocable, description: editInv.description ?? "", non_allocable_reason: editInv.non_allocable_reason ?? "", confidence: editInv.ai_confidence ?? 1, notes: editInv.ai_notes ?? "" }} onClose={() => setEditInv(null)} onDelete={async () => { await api.deleteInvoice(editInv.id); setEditInv(null); await reloadCosts(); }} onSave={async (e) => { await api.updateInvoice(editInv.id, e as never); setEditInv(null); await reloadCosts(); }} />}
+      {review && (() => { const cur = review.positions[review.index]; const next = async () => { if (review.index + 1 < review.positions.length) setReview({ ...review, index: review.index + 1 }); else setReview(null); await reloadCosts(); };
+        return <InvoiceForm key={review.index} units={property.units} title={t("i.review.title")} sub={review.positions.length > 1 ? t("i.review.multi", { i: review.index + 1, n: review.positions.length, f: "" }) : undefined} initial={cur} onClose={() => setReview(null)} onSkip={review.positions.length > 1 ? next : undefined}
+          onSave={async (e) => { await api.createInvoice(property.id, { ...e, source: "upload", file_name: review.file_name, ai_confidence: e.confidence, ai_notes: e.notes } as never); await next(); }} />; })()}
 
       <div className="mt-8 grid gap-4 md:grid-cols-2">
         <Link to="/app/invoices" className="rounded-[var(--radius-card)] border border-line bg-paper p-5 transition-colors hover:border-cobalt">
@@ -203,6 +243,7 @@ function TenantModal({ tenant, onClose, onSaved }: { tenant: Partial<Tenant> & {
         <Field label={t("b.tenant.moveIn")} hint={t("b.tenant.moveIn.hint")}><input className={inputCls} type="date" value={f.move_in} onChange={(e) => setF({ ...f, move_in: e.target.value })} /></Field>
         <Field label={t("b.tenant.moveOut")} hint={t("b.tenant.moveOut.hint")}><input className={inputCls} type="date" value={f.move_out} onChange={(e) => setF({ ...f, move_out: e.target.value })} /></Field>
       </div>
+      {tenant.id && <PaymentsSection tenant={tenant as Tenant} />}
       {tenant.id && <LeaseSection tenant={tenant as Tenant} onApply={(ext) => setF({ ...f, move_in: ext.move_in ?? f.move_in, prepay: ext.monthly_prepayment_cents ? ext.monthly_prepayment_cents / 100 : f.prepay })} />}
       <div className="mt-5 flex items-center justify-between">
         {tenant.id ? <Button variant="danger" size="sm" onClick={async () => { if (confirm(t("b.tenant.remove.confirm"))) { await api.deleteTenant(tenant.id!); onSaved(); } }}>{t("b.tenant.remove")}</Button> : <span />}
@@ -321,6 +362,40 @@ function LeaseSection({ tenant, onApply }: { tenant: Tenant; onApply: (e: LeaseE
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Prepayments actually received in the statement year. Without entries the statement assumes monthly amount × months. */
+function PaymentsSection({ tenant }: { tenant: Tenant }) {
+  const t = useT();
+  const [list, setList] = useState<Payment[]>([]);
+  const [f, setF] = useState({ paid_on: `${YEAR}-01-01`, amount: (tenant.monthly_prepayment_cents / 100).toFixed(2), note: "" });
+  const load = () => api.payments(tenant.id).then(setList);
+  useEffect(() => { load(); }, [tenant.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const year = list.filter((p) => p.paid_on.startsWith(String(YEAR)));
+  const sum = year.reduce((s, p) => s + p.amount_cents, 0);
+  const months = (() => { const s = tenant.move_in && tenant.move_in > `${YEAR}-01-01` ? Number(tenant.move_in.slice(5, 7)) : 1; const e = tenant.move_out && tenant.move_out < `${YEAR}-12-31` ? Number(tenant.move_out.slice(5, 7)) : 12; return Math.max(0, e - s + 1); })();
+  return (
+    <div className="mt-5 rounded-lg border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><div className="font-semibold">{t("pay.received.h", { y: YEAR })}</div><div className="text-xs text-mute">{t("pay.received.sub")}</div></div>
+        {year.length === 0 && <Button size="sm" variant="ghost" onClick={async () => { await api.fillYear(tenant.id, YEAR); load(); }}>{t("pay.received.fill", { y: YEAR })}</Button>}
+      </div>
+      {year.length === 0 ? <p className="mt-3 text-sm text-mute">{t("pay.received.none", { n: months, a: (tenant.monthly_prepayment_cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" }) })}</p> : (
+        <table className="mt-3 w-full text-sm">
+          <tbody className="divide-y divide-line">
+            {year.map((p) => <tr key={p.id}><td className="num py-1.5 text-xs text-mute">{p.paid_on}</td><td className="py-1.5 text-xs">{p.note}</td><td className="num py-1.5 text-right"><Money cents={p.amount_cents} /></td><td className="py-1.5 text-right"><button className="text-xs text-mute hover:text-ember" onClick={async () => { await api.deletePayment(p.id); load(); }}>✕</button></td></tr>)}
+          </tbody>
+          <tfoot><tr className="font-bold"><td className="py-1.5 text-xs" colSpan={2}>{t("pay.received.sum")}</td><td className="num py-1.5 text-right"><Money cents={sum} /></td><td /></tr></tfoot>
+        </table>
+      )}
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <label className="text-xs"><span className="mb-1 block text-mute">{t("pay.date")}</span><input className={inputCls + " !w-auto"} type="date" value={f.paid_on} onChange={(e) => setF({ ...f, paid_on: e.target.value })} /></label>
+        <label className="text-xs"><span className="mb-1 block text-mute">{t("pay.amount")}</span><input className={inputCls + " num !w-28"} type="number" step="0.01" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></label>
+        <label className="flex-1 text-xs"><span className="mb-1 block text-mute">{t("pay.note")}</span><input className={inputCls} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></label>
+        <Button size="sm" onClick={async () => { await api.addPayment(tenant.id, { paid_on: f.paid_on, amount_cents: Math.round(Number(f.amount) * 100), note: f.note }); setF({ ...f, note: "" }); load(); }}>{t("pay.received.add")}</Button>
+      </div>
     </div>
   );
 }

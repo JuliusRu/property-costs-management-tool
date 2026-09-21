@@ -311,6 +311,29 @@ const dict = {
   "b.tenant.existing.hint": ["Copies name, e-mail and prepayment. The old tenancy and its statements stay where they are.", "Übernimmt Name, E-Mail und Vorauszahlung. Das alte Mietverhältnis und seine Abrechnungen bleiben bestehen."],
   "b.occupied": ["{n} of {m} units let", "{n} von {m} Einheiten vermietet"],
 
+  // building: costs section + share column
+  "b.costs.h": ["Costs of the building {y}", "Kosten des Objekts {y}"],
+  "b.costs.sub": ["Every invoice for the whole building or for one unit, with its allocation key. Add them here or upload the PDF.", "Jede Rechnung fürs ganze Objekt oder für eine Einheit, mit ihrem Umlageschlüssel. Hier erfassen oder das PDF hochladen."],
+  "b.costs.add": ["Add invoice", "Rechnung erfassen"],
+  "b.costs.upload": ["Upload PDF", "PDF hochladen"],
+  "b.costs.all": ["All invoices", "Alle Rechnungen"],
+  "b.costs.empty": ["No costs booked for {y} yet.", "Für {y} sind noch keine Kosten gebucht."],
+  "b.th.share": ["Share {y}", "Anteil {y}"],
+  "b.share.hint": ["costs − prepaid", "Kosten − vorausgezahlt"],
+  "b.stat.owner": ["Your share {y}", "Dein Anteil {y}"],
+  "b.stat.owner.sub": ["vacancy, non-allocable, lease deviations", "Leerstand, nicht umlagefähig, Vertragsabweichungen"],
+  "i.f.manual.title": ["Add invoice", "Rechnung erfassen"],
+
+  // payments received
+  "pay.received.h": ["Prepayments received {y}", "Eingegangene Vorauszahlungen {y}"],
+  "pay.received.sub": ["What the tenant actually paid. If nothing is recorded, the statement assumes the monthly amount for every month of the tenancy.", "Was der Mieter tatsächlich gezahlt hat. Ohne Einträge rechnet die Abrechnung mit dem Monatsbetrag für jeden Monat der Mietzeit."],
+  "pay.received.add": ["Add payment", "Zahlung erfassen"],
+  "pay.received.fill": ["Book monthly amount for {y}", "Monatsbetrag für {y} buchen"],
+  "pay.received.none": ["No payments recorded — {n} × {a} assumed.", "Keine Zahlungen erfasst — es werden {n} × {a} angenommen."],
+  "pay.received.sum": ["Sum", "Summe"],
+  "tn.th.paid": ["Prepaid {y}", "Vorausgezahlt {y}"],
+  "s.createPdf": ["Create statement (PDF)", "Abrechnung erstellen (PDF)"],
+
   // documents
   "nav.documents": ["Documents", "Dokumente"],
   "d.title": ["Documents", "Dokumente"],

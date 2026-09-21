@@ -85,7 +85,7 @@ export default function Statements({ property, onChange }: { property: Property;
               { key: "sent", label: t("s.th.sent"), sort: (s) => s.sent_at ?? "", render: (s) => s.sent_at ? <Badge tone="green">{t("s.sentOn", { d: s.sent_at.slice(0, 10) })}</Badge> : <Badge tone="amber">{t("s.notSent")}</Badge> },
               { key: "payment", label: t("s.th.payment"), sort: (s) => s.payment_status, render: (s) => s.balance_cents !== 0 ? <PaymentControl sid={s.id} balance={s.balance_cents} status={s.payment_status} paidAt={s.paid_at} note={s.payment_note} onChange={async () => { await load(); onChange(); }} compact /> : <span className="text-xs text-mute">—</span> },
               { key: "actions", label: "", align: "right", nowrap: true, render: (s) => { const tn = tenantOf(s); return <span className="inline-flex items-center gap-2">
-                <a className="text-sm font-semibold text-cobalt hover:underline" href={`/api/statements/${s.id}/pdf`} target="_blank" rel="noreferrer">{t("common.pdf")}</a>
+                <a href={`/api/statements/${s.id}/pdf`} target="_blank" rel="noreferrer"><Button size="sm">{t("s.createPdf")}</Button></a>
                 {tn && <a className="text-sm font-semibold text-cobalt hover:underline" href={`/portal/${tn.portal_token}`} target="_blank" rel="noreferrer">{t("common.portal")}</a>}
                 <SendButton s={s} blocked={blockers.length > 0} onChange={async () => { await load(); onChange(); }} />
                 <Button variant="ghost" size="sm" onClick={() => setOpen((o) => { const n = new Set(o); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })}>{open.has(s.id) ? t("s.hideLines") : t("s.showLines")}</Button>

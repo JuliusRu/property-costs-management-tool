@@ -105,6 +105,14 @@ CREATE TABLE IF NOT EXISTS tenants (
   password_hash TEXT,
   registered_at TEXT
 );
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  paid_on TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS invoices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
@@ -263,7 +271,11 @@ export type Document = {
   size_bytes: number; notes: string | null; created_at: string;
 };
 
+export type Payment = { id: number; tenant_id: number; paid_on: string; amount_cents: number; note: string | null; created_at: string };
+
 export const q = {
+  payments: (tenantId: number) => db.prepare("SELECT * FROM payments WHERE tenant_id = ? ORDER BY paid_on, id").all(tenantId) as unknown as Payment[],
+  paymentsForProperty: (propertyId: number) => db.prepare("SELECT p.* FROM payments p JOIN tenants t ON t.id = p.tenant_id JOIN units u ON u.id = t.unit_id WHERE u.property_id = ? ORDER BY p.paid_on, p.id").all(propertyId) as unknown as Payment[],
   documents: (propertyId: number) => db.prepare("SELECT * FROM documents WHERE property_id = ? ORDER BY COALESCE(doc_date, created_at) DESC, id DESC").all(propertyId) as unknown as Document[],
   document: (id: number) => db.prepare("SELECT * FROM documents WHERE id = ?").get(id) as unknown as Document | undefined,
   properties: () => db.prepare("SELECT * FROM properties ORDER BY id").all() as unknown as Property[],

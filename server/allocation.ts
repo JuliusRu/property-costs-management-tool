@@ -1,4 +1,4 @@
-import { CO2_FACTOR, DEFAULT_SETTINGS, leaseOf, type AllocationKey, type Category, type Invoice, type PropertySettings, type Tenant, type Unit } from "./db.js";
+import { CO2_FACTOR, DEFAULT_SETTINGS, leaseOf, type AllocationKey, type Category, type Invoice, type Payment, type PropertySettings, type Tenant, type Unit } from "./db.js";
 
 export type StatementLine = {
   invoice_id: number;
@@ -7,8 +7,9 @@ export type StatementLine = {
   description: string | null;
   allocation_key: AllocationKey;
   total_cents: number;      // building total for the year (pro-rated if the invoice period crosses years)
-  basis_unit: number;       // kept for compatibility; the formula string carries the numbers
-  basis_total: number;
+  distribution: string;     // label of the key as printed on the statement ("Miteigentumsanteil", "direkt €", …)
+  basis_unit: number;       // Abrechnungsmenge: this unit's share basis (e.g. 101.72 MEA)
+  basis_total: number;      // Abrechnungsmenge total of the pool (e.g. 427.97 MEA)
   unit_share_cents: number;
   days_occupied: number;    // days the tenant occupied the unit in the year
   days_in_year: number;
@@ -24,6 +25,8 @@ export type TenantStatement = {
   total_cents: number;
   prepaid_cents: number;
   months_occupied: number;
+  prepaid_from_payments: boolean; // true = sum of recorded payments; false = monthly amount × months
+  payments: Payment[];
   balance_cents: number; // positive = tenant owes, negative = refund
   suggested_prepayment_cents: number; // § 560 (4) BGB: new monthly prepayment = this year's costs / 12
 };
@@ -61,6 +64,7 @@ export function participates(unit: Unit, category: string, pool: string = "all")
 }
 
 const KEY_UNIT: Record<AllocationKey, string> = { area: "m²", mea: "MEA", persons: "persons", units: "unit", heating: "kWh", water: "m³" };
+export const KEY_DISTRIBUTION: Record<AllocationKey, string> = { area: "Wohnfläche", mea: "Miteigentumsanteil", persons: "Personen", units: "Einheiten", heating: "Verbrauch kWh", water: "Verbrauch m³" };
 // Consumption-based keys are already tenant-specific — they are not time-prorated.
 const TIME_PRORATED: Record<AllocationKey, boolean> = { area: true, mea: true, persons: true, units: true, heating: false, water: false };
 
@@ -127,7 +131,7 @@ export function splitCents(total: number, weights: number[]): number[] {
  *   → unit share split across the unit's occupancy: tenant days vs. vacant days.
  * Vacancy never lands on other tenants; it is reported as the owner's share.
  */
-export function computeStatements(units: Unit[], tenants: Tenant[], invoices: Invoice[], year: number, settings: PropertySettings = DEFAULT_SETTINGS, today: Date = new Date()): { statements: TenantStatement[]; summary: BuildingSummary; checks: Check[] } {
+export function computeStatements(units: Unit[], tenants: Tenant[], invoices: Invoice[], year: number, settings: PropertySettings = DEFAULT_SETTINGS, today: Date = new Date(), payments: Payment[] = []): { statements: TenantStatement[]; summary: BuildingSummary; checks: Check[] } {
   const diy = daysInYear(year);
   const perTenant = new Map<number, StatementLine[]>();
   for (const t of tenants) perTenant.set(t.id, []);
@@ -207,7 +211,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     if (allocableAmount === 0) continue; // fully excluded → nothing to distribute, no empty lines
 
     const comps = componentsOf(inv, allocableAmount);
-    const acc = new Map<number, { share: number; days: number; parts: string[] }>();
+    const acc = new Map<number, { share: number; days: number; parts: string[]; bu: number; bt: number; key: AllocationKey }>();
     let ok = true;
     for (const c of comps) {
       // Invoice addressed to one unit → 100 % to that unit (still day-exact by occupancy); otherwise by key across the pool.
@@ -250,7 +254,7 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
             }
           }
           tenantsTotal += share;
-          const a = acc.get(t.id) ?? { share: 0, days: diy, parts: [] };
+          const a = acc.get(t.id) ?? { share: 0, days: diy, parts: [], bu: bases[i], bt: basisTotal, key: c.key };
           a.share += share; a.days = Math.min(a.days, days); a.parts.push(f);
           acc.set(t.id, a);
         });
@@ -266,9 +270,11 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
       const formula = a.parts.length > 1 ? `${a.parts.join("; ")} → ${eur(a.share)}` : a.parts[0];
       const total = comps.reduce((s, c) => s + c.amount, 0);
       const excludedNote = excluded > 0 ? ` (${eur(excluded)} not allocable excluded)` : "";
+      const distribution = inv.unit_id ? "direkt €" : inv.allocation_key === "heating" && !settings.heizkv_exempt ? `Fläche ${pct(1 - share)} / kWh ${pct(share)}`
+        : `${KEY_DISTRIBUTION[a.key]}${inv.pool === "residential" ? " Wohnung" : inv.pool === "commercial" ? " Gewerbe" : ""}`;
       perTenant.get(t.id)!.push({
         invoice_id: inv.id, provider: inv.provider, category: inv.category, description: inv.description,
-        allocation_key: inv.allocation_key, total_cents: total, basis_unit: 0, basis_total: 0,
+        allocation_key: inv.allocation_key, total_cents: total, distribution, basis_unit: inv.unit_id ? 0 : a.bu, basis_total: inv.unit_id ? 0 : a.bt,
         unit_share_cents: 0, days_occupied: a.days, days_in_year: diy, share_cents: a.share, formula: formula + excludedNote,
       });
     }
@@ -279,10 +285,11 @@ export function computeStatements(units: Unit[], tenants: Tenant[], invoices: In
     const lines = perTenant.get(t.id) ?? [];
     const total = lines.reduce((s, l) => s + l.share_cents, 0);
     const months = occupiedMonths(t, year);
-    const prepaid = t.monthly_prepayment_cents * months;
+    const pays = payments.filter((p) => p.tenant_id === t.id && p.paid_on.startsWith(String(year)));
+    const prepaid = pays.length ? pays.reduce((s, p) => s + p.amount_cents, 0) : t.monthly_prepayment_cents * months;
     const days = occupiedDays(t, year);
     const suggested = days > 0 ? Math.round((total * diy) / days / 12) : 0; // annualised, then per month
-    return { tenant: t, unit, year, lines, total_cents: total, prepaid_cents: prepaid, months_occupied: months, balance_cents: total - prepaid, suggested_prepayment_cents: suggested };
+    return { tenant: t, unit, year, lines, total_cents: total, prepaid_cents: prepaid, months_occupied: months, prepaid_from_payments: pays.length > 0, payments: pays, balance_cents: total - prepaid, suggested_prepayment_cents: suggested };
   });
 
   const rounding = allocable - tenantsTotal - ownerVacancy - leaseDiff;

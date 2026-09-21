@@ -13,10 +13,11 @@ export type Invoice = {
   period_start: string; period_end: string; allocation_key: string; pool: Pool; allocable: number; non_allocable_cents: number; non_allocable_reason: string | null; co2_cents: number; energy_kwh: number; source: string; file_name: string | null;
   ai_confidence: number | null; ai_notes: string | null; created_at: string;
 };
-export type Line = { invoice_id: number; provider: string; category: string; description: string | null; allocation_key: string; total_cents: number; basis_unit: number; basis_total: number; unit_share_cents: number; days_occupied: number; days_in_year: number; share_cents: number; formula: string };
+export type Line = { invoice_id: number; provider: string; category: string; description: string | null; allocation_key: string; total_cents: number; distribution: string; basis_unit: number; basis_total: number; unit_share_cents: number; days_occupied: number; days_in_year: number; share_cents: number; formula: string };
 export type Summary = { year: number; invoiced_cents: number; non_allocable_cents: number; allocable_cents: number; tenants_cents: number; owner_vacancy_cents: number; rounding_cents: number; co2_landlord_cents: number; owner_lease_diff_cents: number; legal_basis: string };
 export type Check = { level: "BLOCKER" | "WARNING" | "INFO"; code: string; message: string; hint?: string };
 export type Run = { statements: Statement[]; summary: Summary | null; checks: Check[]; created_at: string | null };
+export type Payment = { id: number; tenant_id: number; paid_on: string; amount_cents: number; note: string | null; created_at: string };
 export type PaymentStatus = "open" | "paid" | "refunded" | "waived";
 export type Statement = { id: number; tenant_id: number; year: number; total_cents: number; prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number; payment_status: PaymentStatus; paid_at: string | null; paid_cents: number | null; payment_note: string | null; lines: Line[]; created_at: string; sent_at: string | null };
 export type TenantRow = Tenant & { unit_label: string; property_id: number; property_name: string; lease_rules: boolean; latest: { id: number; year: number; balance_cents: number; sent_at: string | null; payment_status: PaymentStatus; paid_at: string | null } | null };
@@ -54,6 +55,11 @@ export const api = {
   sync: (pid: number) => req<{ imported: Invoice[]; errors: string[] }>(`/api/properties/${pid}/invoices/sync`, { method: "POST" }),
   statements: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements?year=${year}`),
   tenantsAll: () => req<TenantRow[]>("/api/tenants"),
+  preview: (pid: number, year: number) => req<{ year: number; summary: Summary; units: { unit_id: number; tenants_cents: number; prepaid_cents: number; balance_cents: number }[] }>(`/api/properties/${pid}/preview?year=${year}`),
+  payments: (tenantId: number) => req<Payment[]>(`/api/tenants/${tenantId}/payments`),
+  addPayment: (tenantId: number, body: { paid_on: string; amount_cents: number; note?: string }) => req<Payment>(`/api/tenants/${tenantId}/payments`, json(body)),
+  fillYear: (tenantId: number, year: number) => req<{ inserted: number; payments: Payment[] }>(`/api/tenants/${tenantId}/payments/fill-year`, json({ year })),
+  deletePayment: (id: number) => req<void>(`/api/payments/${id}`, { method: "DELETE" }),
   setPayment: (sid: number, body: { status: PaymentStatus; paid_at?: string; paid_cents?: number; note?: string }) => req<Statement>(`/api/statements/${sid}/payment`, { ...json(body), method: "PATCH" }),
   generate: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements/generate`, json({ year })),
   reset: () => req<{ ok: true }>("/api/reset", { method: "POST" }),
