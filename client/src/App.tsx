@@ -10,6 +10,7 @@ import Statements from "./pages/Statements";
 import Documents from "./pages/Documents";
 import Portal from "./pages/Portal";
 import Landing from "./pages/Landing";
+import { Impressum, Datenschutz } from "./pages/Legal";
 
 function Shell({ property, properties, select, reload }: { property: Property; properties: Property[]; select: (id: number) => void; reload: () => void }) {
   const nav = useNavigate();
@@ -89,6 +90,8 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/impressum" element={<Impressum />} />
+      <Route path="/datenschutz" element={<Datenschutz />} />
       <Route path="/portal" element={<Portal />} />
       <Route path="/portal/:token" element={<Portal />} />
       <Route path="/app/*" element={<LandlordArea />} />

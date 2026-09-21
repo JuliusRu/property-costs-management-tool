@@ -416,6 +416,52 @@ const dict = {
   "l.preview.sub": ["costs 2.153,37 € − prepaid 2.280,00 €", "Kosten 2.153,37 € − vorausgezahlt 2.280,00 €"],
   "l.preview.heating": ["30 % by area + 70 % by kWh", "30 % Fläche + 70 % kWh"],
   "l.preview.caretaker": ["1.713,60 € × 58 / 178 m² · repair excluded", "1.713,60 € × 58 / 178 m² · Reparatur raus"],
+
+  // landing: product tour
+  "l.tour.h": ["What you actually work with", "Womit du tatsächlich arbeitest"],
+  "l.tour.1": ["Occupancy, day-exact", "Belegung, taggenau"],
+  "l.tour.1.d": ["Move-ins, move-outs and empty months per unit. Yellow months are yours — never charged to the other tenants.", "Ein- und Auszüge und leere Monate je Einheit. Gelbe Monate trägst du — sie landen nie bei den anderen Mietern."],
+  "l.tour.2": ["Checks before anything goes out", "Prüfungen, bevor etwas rausgeht"],
+  "l.tour.2.d": ["Duplicates, wrong periods, cable after 2024, CO₂ split, unconfirmed lease rules, the 12-month deadline. Errors block sending; warnings explain themselves.", "Dubletten, falsche Zeiträume, Kabel nach 2024, CO₂-Aufteilung, unbestätigte Vertragsregeln, die 12-Monats-Frist. Fehler blockieren den Versand; Warnungen erklären sich selbst."],
+  "l.tour.3": ["A statement tenants can verify", "Eine Abrechnung, die Mieter prüfen können"],
+  "l.tour.3.d": ["Every line with its formula and a link to the original invoice. Fewer calls, fewer objections, faster payment.", "Jede Position mit Formel und Link zur Originalrechnung. Weniger Anrufe, weniger Widersprüche, schnellere Zahlung."],
+  "l.tour.vacant": ["vacant → owner", "leer → Eigentümer"],
+  "l.tour.check1": ["DG was vacant for 243 days — that share is booked to the owner, not to other tenants.", "DG stand 243 Tage leer — dieser Anteil geht an den Eigentümer, nicht an andere Mieter."],
+  "l.tour.check2": ["Lease of Familie Öztürk allocates waste by area — you bear the 46,79 € difference.", "Mietvertrag Öztürk legt Müll nach Fläche um — die Differenz von 46,79 € trägst du."],
+  "l.tour.check3": ["CO₂ costs 462,52 €: 16,1 kg/m² → landlord share 10 % = 46,25 € (CO2KostAufG).", "CO₂-Kosten 462,52 €: 16,1 kg/m² → Vermieteranteil 10 % = 46,25 € (CO2KostAufG)."],
+  "l.tour.check4": ["Deadline for 2025: tenants must receive the statement by 31 Dec 2026 — 466 days left.", "Frist für 2025: Zugang beim Mieter bis 31.12.2026 — noch 466 Tage."],
+  "l.tour.ready": ["ready to send", "bereit zum Versand"],
+
+  // landing: rules
+  "l.rulesbox.h": ["The rules are built in, not bolted on", "Die Regeln sind eingebaut, nicht angeflanscht"],
+  "l.rulesbox.sub": ["Billnest computes with a versioned German rule set. When the law changes, the rule set changes — you do not have to remember it.", "Billnest rechnet mit einem versionierten deutschen Regelwerk. Ändert sich das Gesetz, ändert sich das Regelwerk — du musst es dir nicht merken."],
+  "l.rules.1": ["§ 2 BetrKV — the 17 cost types, with non-allocable parts split out (repairs, admin)", "§ 2 BetrKV — die 17 Kostenarten, nicht umlagefähige Anteile getrennt (Reparatur, Verwaltung)"],
+  "l.rules.2": ["§ 556a BGB — area, persons, per unit, metered consumption; lease-agreed keys rank first", "§ 556a BGB — Fläche, Personen, Einheit, Verbrauch; vertraglich vereinbarte Schlüssel gehen vor"],
+  "l.rules.3": ["HeizkostenV § 7 — 50–70 % of heating by consumption, § 11 exemption for owner-occupied two-unit houses", "HeizkostenV § 7 — 50–70 % der Heizkosten nach Verbrauch, § 11-Ausnahme fürs selbst bewohnte Zweifamilienhaus"],
+  "l.rules.4": ["CO2KostAufG — the landlord's CO₂ share from the building's emissions per m², ten stages", "CO2KostAufG — Vermieteranteil an den CO₂-Kosten nach Emissionen je m², zehn Stufen"],
+  "l.rules.5": ["TKG 2024 — cable TV is no longer allocable; Billnest flags and excludes it", "TKG 2024 — Kabel-TV ist nicht mehr umlagefähig; Billnest markiert und nimmt es raus"],
+  "l.rules.6": ["§ 556 (3) BGB — the 12-month deadline, with a countdown; § 560 (4) — a suggested new prepayment", "§ 556 Abs. 3 BGB — die 12-Monats-Frist mit Countdown; § 560 Abs. 4 — Vorschlag für die neue Vorauszahlung"],
+  "l.rules.note": ["Billnest computes under stated rules and shows its work. It is not legal advice — for unusual cases, have a professional look at the output.", "Billnest rechnet nach benannten Regeln und zeigt den Rechenweg. Es ist keine Rechtsberatung — bei ungewöhnlichen Fällen lass das Ergebnis fachlich prüfen."],
+
+  // landing: FAQ
+  "l.faq.h": ["Questions landlords ask", "Was Vermieter fragen"],
+  "l.faq.1.q": ["Does the AI make the statement?", "Macht die KI die Abrechnung?"],
+  "l.faq.1.a": ["No. AI reads documents and proposes values; you confirm them. The statement itself is computed by deterministic code with integer cents. Same input, same result, every time.", "Nein. Die KI liest Dokumente und schlägt Werte vor; du bestätigst sie. Die Abrechnung selbst rechnet deterministischer Code in ganzen Cent. Gleiche Eingabe, gleiches Ergebnis, jedes Mal."],
+  "l.faq.2.q": ["I have one house with one tenant. Is this for me?", "Ich habe ein Haus mit einem Mieter. Ist das etwas für mich?"],
+  "l.faq.2.a": ["Yes — a single-family house is a building with one unit, and it is free. You still get the invoice reading, the checks, the PDF and the tenant portal.", "Ja — ein Einfamilienhaus ist ein Objekt mit einer Einheit, und das ist kostenlos. Du bekommst trotzdem das Rechnungslesen, die Prüfungen, das PDF und das Mieterportal."],
+  "l.faq.3.q": ["What about my existing leases with special clauses?", "Was ist mit meinen bestehenden Mietverträgen und Sonderklauseln?"],
+  "l.faq.3.a": ["Upload the lease. Billnest reads the operating-cost clauses, quotes them verbatim, and proposes the agreed keys. After you confirm, those rules rank above the building default — and if they cost you money, the statement says so.", "Lade den Vertrag hoch. Billnest liest die Betriebskostenklauseln, zitiert sie wörtlich und schlägt die vereinbarten Schlüssel vor. Nach deiner Bestätigung gehen diese Regeln dem Objektstandard vor — und wenn sie dich Geld kosten, sagt es die Abrechnung."],
+  "l.faq.4.q": ["Where is my data?", "Wo liegen meine Daten?"],
+  "l.faq.4.a": ["On a server in Frankfurt. Documents you upload are stored there and only sent to the AI provider for reading when you upload them. Tenants only ever see their own statement and the invoices behind it.", "Auf einem Server in Frankfurt. Hochgeladene Dokumente liegen dort und werden nur zum Auslesen an den KI-Anbieter geschickt. Mieter sehen immer nur ihre eigene Abrechnung und die Belege dahinter."],
+  "l.faq.5.q": ["What does it cost?", "Was kostet es?"],
+  "l.faq.5.a": ["Free up to two units. Beyond that 24 € per unit per year — a statement is a yearly event, so there is no monthly subscription.", "Kostenlos bis zwei Einheiten. Darüber 24 € je Einheit und Jahr — eine Abrechnung ist ein Jahresereignis, deshalb kein Monatsabo."],
+  "l.faq.6.q": ["Can I try it before the season?", "Kann ich es vor der Saison ausprobieren?"],
+  "l.faq.6.a": ["Yes. The live demo has a sample building with invoices, a scanned lease and a vacancy. Click through, generate statements, open the tenant portal.", "Ja. Die Live-Demo hat ein Beispielobjekt mit Rechnungen, gescanntem Mietvertrag und Leerstand. Klick dich durch, erzeuge Abrechnungen, öffne das Mieterportal."],
+
+  "l.footer.imprint": ["Imprint", "Impressum"],
+  "l.footer.privacy": ["Privacy", "Datenschutz"],
+  "l.footer.made": ["Made in Aachen · built at the MAIN × SpaceX AI Hackathon, Maastricht", "Aus Aachen · entstanden beim MAIN × SpaceX AI Hackathon, Maastricht"],
+  "legal.back": ["Back to start", "Zurück zur Startseite"],
 } as const satisfies Record<string, readonly [string, string]>;
 
 export type Key = keyof typeof dict;

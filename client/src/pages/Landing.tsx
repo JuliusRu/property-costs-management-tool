@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { Button, Card, inputCls, Wordmark } from "../ui";
+import { Badge, Button, Card, inputCls, Wordmark } from "../ui";
 import { LangSwitch, useT, type Key } from "../i18n";
 
 export default function Landing() {
@@ -52,12 +52,38 @@ export default function Landing() {
         </ol>
       </section>
 
+      {/* Product tour: three real UI fragments, not screenshots — always in sync with the app's design */}
       <section className="bg-surface">
+        <div className="mx-auto max-w-6xl px-6 py-20">
+          <h2 className="display max-w-2xl text-4xl">{t("l.tour.h")}</h2>
+          <div className="mt-12 grid gap-8 lg:grid-cols-3">
+            <TourCard title={t("l.tour.1")} text={t("l.tour.1.d")}><OccupancyMock /></TourCard>
+            <TourCard title={t("l.tour.2")} text={t("l.tour.2.d")}><ChecksMock /></TourCard>
+            <TourCard title={t("l.tour.3")} text={t("l.tour.3.d")}><PortalMock /></TourCard>
+          </div>
+        </div>
+      </section>
+
+      <section>
         <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="display max-w-2xl text-4xl">{t("l.rules.h")}</h2>
           <div className="mt-12 grid gap-8 md:grid-cols-3">
             {(["1", "2", "3"] as const).map((n) => <div key={n}><div className="text-lg font-bold">{t(`l.rule${n}` as Key)}</div><p className="mt-2 text-sm text-ink-soft">{t(`l.rule${n}.d` as Key)}</p></div>)}
           </div>
+        </div>
+      </section>
+
+      {/* Rules */}
+      <section className="bg-ink text-white">
+        <div className="mx-auto grid max-w-6xl gap-10 px-6 py-20 lg:grid-cols-5">
+          <div className="lg:col-span-2">
+            <h2 className="display text-4xl">{t("l.rulesbox.h")}</h2>
+            <p className="mt-4 text-white/75">{t("l.rulesbox.sub")}</p>
+            <p className="mt-6 text-xs text-white/50">{t("l.rules.note")}</p>
+          </div>
+          <ul className="space-y-3 text-sm lg:col-span-3">
+            {(["1", "2", "3", "4", "5", "6"] as const).map((n) => <li key={n} className="flex gap-3 rounded-lg border border-white/10 bg-white/5 px-4 py-3"><span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-cobalt" />{t(`l.rules.${n}` as Key)}</li>)}
+          </ul>
         </div>
       </section>
 
@@ -72,6 +98,16 @@ export default function Landing() {
         <p className="mt-6 text-xs text-mute">{t("l.pricing.note")}</p>
       </section>
 
+      {/* FAQ */}
+      <section className="bg-surface">
+        <div className="mx-auto max-w-6xl px-6 py-20">
+          <h2 className="display text-4xl">{t("l.faq.h")}</h2>
+          <dl className="mt-10 grid gap-x-10 gap-y-8 md:grid-cols-2">
+            {(["1", "2", "3", "4", "5", "6"] as const).map((n) => <div key={n}><dt className="text-lg font-bold">{t(`l.faq.${n}.q` as Key)}</dt><dd className="mt-2 text-sm text-ink-soft">{t(`l.faq.${n}.a` as Key)}</dd></div>)}
+          </dl>
+        </div>
+      </section>
+
       <section id="waitlist" className="bg-cobalt text-white">
         <div className="mx-auto grid max-w-6xl items-center gap-10 px-6 py-20 lg:grid-cols-2">
           <div>
@@ -82,10 +118,12 @@ export default function Landing() {
         </div>
       </section>
 
-      <footer className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-10 text-sm text-mute">
-        <Wordmark />
-        <div className="flex gap-6"><a href="#" className="hover:text-ink">Impressum</a><a href="#" className="hover:text-ink">Datenschutz</a><Link to="/login" className="hover:text-ink">{t("l.signin")}</Link></div>
-        <div>{t("l.footer.legal")}</div>
+      <footer className="mx-auto max-w-6xl px-6 py-10 text-sm text-mute">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <Wordmark />
+          <div className="flex gap-6"><Link to="/impressum" className="hover:text-ink">{t("l.footer.imprint")}</Link><Link to="/datenschutz" className="hover:text-ink">{t("l.footer.privacy")}</Link><Link to="/login" className="hover:text-ink">{t("l.signin")}</Link></div>
+        </div>
+        <div className="mt-4 flex flex-wrap justify-between gap-2 text-xs"><span>{t("l.footer.legal")}</span><span>{t("l.footer.made")}</span></div>
       </footer>
     </div>
   );
@@ -148,5 +186,58 @@ function StatementPreview() {
         </tbody>
       </table>
     </Card>
+  );
+}
+
+function TourCard({ title, text, children }: { title: string; text: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <Card className="overflow-hidden p-4">{children}</Card>
+      <div className="mt-4 text-lg font-bold">{title}</div>
+      <p className="mt-1 text-sm text-ink-soft">{text}</p>
+    </div>
+  );
+}
+
+function OccupancyMock() {
+  const t = useT();
+  const rows: [string, string, number][] = [["EG links", "Lena Hoffmann", 0], ["1. OG", "Familie Öztürk", 0], ["DG", "Tom Becker", 8]];
+  return (
+    <div className="space-y-3 text-xs">
+      <div className="flex justify-between text-mute"><span>Lindenstraße 12 · 2025</span><span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-3 rounded-sm bg-sun" />{t("l.tour.vacant")}</span></div>
+      {rows.map(([u, n, vac]) => (
+        <div key={u}>
+          <div className="mb-1 flex justify-between"><span className="font-semibold">{u}</span><span className="text-mute">{n}</span></div>
+          <div className="flex gap-0.5">{Array.from({ length: 12 }, (_, i) => <div key={i} className={`h-2.5 flex-1 rounded-sm ${i < vac ? "bg-sun" : "bg-cobalt"}`} />)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChecksMock() {
+  const t = useT();
+  const items: [("slate" | "amber" | "green"), Key, Key][] = [["slate", "s.lvl.INFO", "l.tour.check1"], ["amber", "s.lvl.WARNING", "l.tour.check2"], ["slate", "s.lvl.INFO", "l.tour.check3"], ["slate", "s.lvl.INFO", "l.tour.check4"]];
+  return (
+    <div className="text-xs">
+      <div className="mb-2 flex items-center gap-2 font-semibold">Checks <Badge tone="green">{t("l.tour.ready")}</Badge></div>
+      <ul className="space-y-2">{items.map(([tone, lbl, k], i) => <li key={i} className="flex gap-2"><span className="shrink-0"><Badge tone={tone}>{t(lbl)}</Badge></span><span className="text-ink-soft">{t(k as Key)}</span></li>)}</ul>
+    </div>
+  );
+}
+
+function PortalMock() {
+  const t = useT();
+  return (
+    <div className="text-xs">
+      <div className="flex items-center justify-between"><span className="font-semibold">{t("p.statement", { y: 2025 })}</span><Badge tone="green">{t("p.issued", { d: "2026-03-02" })}</Badge></div>
+      <div className="mt-2 text-[10px] text-mute">{t("p.youGet")}</div>
+      <div className="display num text-3xl text-mint">126,63 €</div>
+      <div className="mt-3 divide-y divide-line border-t border-line">
+        {[[t("cat.heating"), "643,08 €"], [t("cat.water_sewage"), "250,72 €"], [t("cat.waste"), "138,80 €"]].map(([c, v]) => (
+          <div key={c} className="flex items-center justify-between py-1.5"><div>{c}<div className="text-[10px] text-cobalt">{t("p.seeInvoice")}</div></div><span className="num font-semibold">{v}</span></div>
+        ))}
+      </div>
+    </div>
   );
 }
