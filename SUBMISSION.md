@@ -41,6 +41,6 @@ Germany has ~3.9 million private landlords with 1–20 units. Once a year each h
 ## Before you press submit
 - [x] Repo is Public (history checked: no secrets, .env never committed, real documents untracked)
 - [x] Jury login works live (no Coolify variables needed). Optional: `DEMO_MODE=1` prefills the login form.
-- [ ] Add `Market Research.pdf` to the repo root (README links to that name)
+- [x] Market research PDF in the repo root, linked from the README
 - [ ] Upload the video (or paste a YouTube/Drive link)
 - [x] Screenshots in `submission/` (01 landing … 12 statement PDF)
