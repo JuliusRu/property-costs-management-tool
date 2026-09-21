@@ -9,7 +9,12 @@ export function resetAndSeed() {
 
 export function seedIfEmpty() {
   const count = (db.prepare("SELECT COUNT(*) AS n FROM properties").get() as { n: number }).n;
-  if (count > 0) return;
+  if (count > 0) {
+    // Demo databases created before the Munich building existed: add it once, without touching anything else.
+    const has = (name: string) => !!db.prepare("SELECT 1 FROM properties WHERE name = ?").get(name);
+    if (has("Lindenstraße 12") && !has("Musterweg 7")) seedMunich();
+    return;
+  }
 
   const prop = db
     .prepare("INSERT INTO properties (name, address, country, settings_json) VALUES (?, ?, 'DE', ?)")
