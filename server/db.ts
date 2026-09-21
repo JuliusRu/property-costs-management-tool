@@ -12,21 +12,26 @@ db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
 // Allocation keys according to German BetrKV practice.
 export type AllocationKey = "area" | "persons" | "units" | "heating" | "water";
 
+// § 2 BetrKV catalogue (numbers in comments = § 2 Nr.)
 export const CATEGORIES = [
-  "property_tax",
-  "water_sewage",
-  "heating",
-  "hot_water",
-  "waste",
-  "cleaning",
-  "garden",
-  "lighting",
-  "chimney",
-  "insurance",
-  "caretaker",
-  "elevator",
-  "cable",
-  "other",
+  "property_tax",     // 1
+  "water_sewage",     // 2, 3 — metered water and sewage
+  "rainwater",        // 3 — Niederschlagswasser, by sealed area, not consumption
+  "heating",          // 4
+  "hot_water",        // 5
+  "elevator",         // 7
+  "street_cleaning",  // 8
+  "waste",            // 8
+  "cleaning",         // 9
+  "pest_control",     // 9
+  "garden",           // 10
+  "lighting",         // 11 — Allgemeinstrom
+  "chimney",          // 12
+  "insurance",        // 13 — Sach- und Haftpflichtversicherung
+  "caretaker",        // 14
+  "cable",            // 15 — NOT allocable for periods from 1 July 2024 (TKG amendment)
+  "laundry",          // 16
+  "other",            // 17 — must be named explicitly in the lease
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
@@ -34,31 +39,51 @@ export type Category = (typeof CATEGORIES)[number];
 export const DEFAULT_KEY: Record<Category, AllocationKey> = {
   property_tax: "area",
   water_sewage: "water",
+  rainwater: "area",
   heating: "heating",
   hot_water: "water",
+  elevator: "area",
+  street_cleaning: "area",
   waste: "persons",
   cleaning: "area",
+  pest_control: "area",
   garden: "area",
   lighting: "area",
   chimney: "units",
   insurance: "area",
   caretaker: "area",
-  elevator: "area",
   cable: "units",
+  laundry: "units",
   other: "area",
 };
+
+// ---- building-level settings that change which legal rules apply ----
+export const HEATING_TYPES = ["gas", "oil", "district", "heat_pump", "pellets", "decentral"] as const;
+export type HeatingType = (typeof HEATING_TYPES)[number];
+// kg CO₂ per kWh of fuel — used for the CO2KostAufG stage. District heating varies by network; 0.28 is a common default.
+export const CO2_FACTOR: Record<HeatingType, number> = { gas: 0.201, oil: 0.266, district: 0.28, heat_pump: 0, pellets: 0.023, decentral: 0 };
+export type PropertySettings = {
+  heating_type: HeatingType;
+  consumption_share: number;       // HeizkostenV § 7: 0.5 – 0.7 of heating costs by consumption
+  hot_water_central: boolean;      // hot water produced by the central heating (§ 9 combined system)
+  heizkv_exempt: boolean;          // § 11 HeizkostenV: two-unit building with the landlord living in it → free allocation
+  heated_area_sqm: number | null;  // for the CO₂ stage; defaults to the sum of unit areas
+};
+export const DEFAULT_SETTINGS: PropertySettings = { heating_type: "gas", consumption_share: 0.7, hot_water_central: true, heizkv_exempt: false, heated_area_sqm: null };
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS properties (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   address TEXT NOT NULL,
-  country TEXT NOT NULL DEFAULT 'DE'
+  country TEXT NOT NULL DEFAULT 'DE',
+  settings_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS units (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
   label TEXT NOT NULL,
+  unit_type TEXT NOT NULL DEFAULT 'residential',
   area_sqm REAL NOT NULL,
   persons INTEGER NOT NULL DEFAULT 1,
   heating_kwh REAL NOT NULL DEFAULT 0,
@@ -87,6 +112,8 @@ CREATE TABLE IF NOT EXISTS invoices (
   allocable INTEGER NOT NULL DEFAULT 1,
   non_allocable_cents INTEGER NOT NULL DEFAULT 0,
   non_allocable_reason TEXT,
+  co2_cents INTEGER NOT NULL DEFAULT 0,
+  energy_kwh REAL NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT 'manual',
   file_name TEXT,
   ai_confidence REAL,
@@ -114,6 +141,7 @@ CREATE TABLE IF NOT EXISTS statements (
   total_cents INTEGER NOT NULL,
   prepaid_cents INTEGER NOT NULL,
   balance_cents INTEGER NOT NULL,
+  suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0,
   lines_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   sent_at TEXT,
@@ -124,7 +152,12 @@ CREATE TABLE IF NOT EXISTS statements (
 // tiny forward-only migrations for databases created before a column existed
 for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE tenants ADD COLUMN move_out TEXT",
   "ALTER TABLE invoices ADD COLUMN non_allocable_cents INTEGER NOT NULL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN non_allocable_reason TEXT",
-  "ALTER TABLE tenants ADD COLUMN access_code TEXT"]) {
+  "ALTER TABLE tenants ADD COLUMN access_code TEXT",
+  "ALTER TABLE properties ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE units ADD COLUMN unit_type TEXT NOT NULL DEFAULT 'residential'",
+  "ALTER TABLE invoices ADD COLUMN co2_cents INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE invoices ADD COLUMN energy_kwh REAL NOT NULL DEFAULT 0",
+  "ALTER TABLE statements ADD COLUMN suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0"]) {
   try { db.exec(stmt); } catch { /* column exists */ }
 }
 
@@ -138,9 +171,10 @@ for (const row of db.prepare("SELECT id FROM tenants WHERE access_code IS NULL")
   db.prepare("UPDATE tenants SET access_code = ? WHERE id = ?").run(newAccessCode(), row.id);
 }
 
-export type Property = { id: number; name: string; address: string; country: string };
+export type Property = { id: number; name: string; address: string; country: string; settings_json: string };
+export type UnitType = "residential" | "commercial" | "garage";
 export type Unit = {
-  id: number; property_id: number; label: string; area_sqm: number;
+  id: number; property_id: number; label: string; unit_type: UnitType; area_sqm: number;
   persons: number; heating_kwh: number; water_m3: number;
 };
 export type Tenant = {
@@ -152,14 +186,19 @@ export type Invoice = {
   description: string | null; amount_cents: number; period_start: string;
   period_end: string; allocation_key: AllocationKey; allocable: number;
   non_allocable_cents: number; non_allocable_reason: string | null;
+  co2_cents: number; energy_kwh: number;
   source: string; file_name: string | null; ai_confidence: number | null;
   ai_notes: string | null; created_at: string;
 };
 export type Statement = {
   id: number; tenant_id: number; year: number; total_cents: number;
-  prepaid_cents: number; balance_cents: number; lines_json: string;
+  prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number; lines_json: string;
   created_at: string; sent_at: string | null;
 };
+
+export function settingsOf(p: Property): PropertySettings {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(p.settings_json || "{}") }; } catch { return { ...DEFAULT_SETTINGS }; }
+}
 
 export const q = {
   properties: () => db.prepare("SELECT * FROM properties ORDER BY id").all() as unknown as Property[],

@@ -7,7 +7,7 @@ export const eur = (cents: number) =>
 
 const KEY_LABEL: Record<string, string> = {
   area: "nach Wohnfläche (m²)", persons: "nach Personen", units: "je Einheit",
-  heating: "Heizung: 30 % Fläche / 70 % Verbrauch (HeizkostenV)", water: "nach Wasserverbrauch (m³)",
+  heating: "Heizung: Grundkosten nach Fläche, Verbrauch nach kWh (HeizkostenV)", water: "nach Wasserverbrauch (m³)",
 };
 
 export function statementPdf(property: Property, s: TenantStatement, portalUrl: string): Promise<Buffer> {
@@ -47,6 +47,11 @@ export function statementPdf(property: Property, s: TenantStatement, portalUrl: 
     doc.text(`Geleistete Vorauszahlungen (${s.months_occupied} × ${eur(s.tenant.monthly_prepayment_cents)}): ${eur(s.prepaid_cents)}`);
     doc.moveDown(0.3).fontSize(13)
       .text(s.balance_cents > 0 ? `Nachzahlung: ${eur(s.balance_cents)}` : `Guthaben: ${eur(-s.balance_cents)}`);
+    if (s.suggested_prepayment_cents > 0 && Math.abs(s.suggested_prepayment_cents - s.tenant.monthly_prepayment_cents) >= 500) {
+      doc.moveDown(0.5).fontSize(10).fillColor("#333")
+        .text(`Anpassung der Vorauszahlung (§ 560 Abs. 4 BGB): Auf Basis dieser Abrechnung beträgt die angemessene monatliche Vorauszahlung ab dem nächsten Monat ${eur(s.suggested_prepayment_cents)} (bisher ${eur(s.tenant.monthly_prepayment_cents)}).`)
+        .fillColor("#000");
+    }
     doc.moveDown().fontSize(9).fillColor("#555")
       .text(`Jede Position können Sie mit Originalbeleg im Mieterportal nachvollziehen: ${portalUrl}`)
       .text(`Oder Anmeldung mit E-Mail ${s.tenant.email} und Zugangscode ${s.tenant.access_code}.`)

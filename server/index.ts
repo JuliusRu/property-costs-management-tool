@@ -5,9 +5,9 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { db, q, CATEGORIES, DEFAULT_KEY, newAccessCode, type Category, type AllocationKey, type Tenant } from "./db.js";
+import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, newAccessCode, settingsOf, type Category, type AllocationKey, type Tenant, type HeatingType } from "./db.js";
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
-import { computeStatements, occupiedMonths } from "./allocation.js";
+import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
 import { extractInvoice, type Extraction } from "./ai.js";
 import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession } from "./auth.js";
 import { sendMail } from "./mail.js";
@@ -114,9 +114,23 @@ app.use("/api", requireLandlord);
 
 // ---------- properties ----------
 app.get("/api/properties", (_req, res) => {
-  res.json(q.properties().map((p) => ({ ...p, units: q.units(p.id), tenants: q.tenants(p.id) })));
+  res.json(q.properties().map((p) => ({ ...p, settings: settingsOf(p), settings_json: undefined, units: q.units(p.id), tenants: q.tenants(p.id) })));
 });
-app.get("/api/meta", (_req, res) => res.json({ categories: CATEGORIES, default_key: DEFAULT_KEY }));
+app.get("/api/meta", (_req, res) => res.json({ categories: CATEGORIES, default_key: DEFAULT_KEY, heating_types: HEATING_TYPES, rules: RULES_VERSION }));
+app.patch("/api/properties/:id/settings", (req, res) => {
+  const p = q.property(num(req.params.id));
+  if (!p) return res.status(404).end();
+  const cur = settingsOf(p), b = req.body ?? {};
+  const next = {
+    heating_type: (HEATING_TYPES as readonly string[]).includes(b.heating_type) ? (b.heating_type as HeatingType) : cur.heating_type,
+    consumption_share: Number.isFinite(Number(b.consumption_share)) ? Math.min(0.7, Math.max(0.5, Number(b.consumption_share))) : cur.consumption_share,
+    hot_water_central: typeof b.hot_water_central === "boolean" ? b.hot_water_central : cur.hot_water_central,
+    heizkv_exempt: typeof b.heizkv_exempt === "boolean" ? b.heizkv_exempt : cur.heizkv_exempt,
+    heated_area_sqm: b.heated_area_sqm === null || b.heated_area_sqm === "" ? null : Number.isFinite(Number(b.heated_area_sqm)) ? Number(b.heated_area_sqm) : cur.heated_area_sqm,
+  };
+  db.prepare("UPDATE properties SET settings_json = ? WHERE id = ?").run(JSON.stringify(next), p.id);
+  res.json(next);
+});
 app.get("/api/waitlist", (_req, res) => res.json(db.prepare("SELECT email, units, created_at FROM waitlist ORDER BY id DESC").all()));
 // Demo helper: wipe everything and reseed so the flow can be shown again from scratch.
 app.post("/api/reset", (_req, res) => { resetAndSeed(); res.json({ ok: true }); });
@@ -135,16 +149,18 @@ app.patch("/api/properties/:id", (req, res) => {
 app.post("/api/properties/:id/units", (req, res) => {
   const b = req.body ?? {};
   if (!b.label) return res.status(400).json({ error: "label missing" });
-  const r = db.prepare("INSERT INTO units (property_id, label, area_sqm, persons, heating_kwh, water_m3) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(num(req.params.id), String(b.label).slice(0, 60), numOr(b.area_sqm, 0), numOr(b.persons, 1), numOr(b.heating_kwh, 0), numOr(b.water_m3, 0));
+  const ut = ["residential", "commercial", "garage"].includes(b.unit_type) ? b.unit_type : "residential";
+  const r = db.prepare("INSERT INTO units (property_id, label, unit_type, area_sqm, persons, heating_kwh, water_m3) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(num(req.params.id), String(b.label).slice(0, 60), ut, numOr(b.area_sqm, 0), numOr(b.persons, 1), numOr(b.heating_kwh, 0), numOr(b.water_m3, 0));
   res.status(201).json(q.unit(Number(r.lastInsertRowid)));
 });
 app.patch("/api/units/:id", (req, res) => {
   const u = q.unit(num(req.params.id));
   if (!u) return res.status(404).end();
   const b = req.body ?? {};
-  db.prepare("UPDATE units SET label = ?, area_sqm = ?, persons = ?, heating_kwh = ?, water_m3 = ? WHERE id = ?")
-    .run(String(b.label ?? u.label).slice(0, 60), numOr(b.area_sqm, u.area_sqm), numOr(b.persons, u.persons), numOr(b.heating_kwh, u.heating_kwh), numOr(b.water_m3, u.water_m3), u.id);
+  const ut = ["residential", "commercial", "garage"].includes(b.unit_type) ? b.unit_type : u.unit_type;
+  db.prepare("UPDATE units SET label = ?, unit_type = ?, area_sqm = ?, persons = ?, heating_kwh = ?, water_m3 = ? WHERE id = ?")
+    .run(String(b.label ?? u.label).slice(0, 60), ut, numOr(b.area_sqm, u.area_sqm), numOr(b.persons, u.persons), numOr(b.heating_kwh, u.heating_kwh), numOr(b.water_m3, u.water_m3), u.id);
   res.json(q.unit(u.id));
 });
 app.delete("/api/units/:id", (req, res) => { db.prepare("DELETE FROM units WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
@@ -184,10 +200,11 @@ function insertInvoice(propertyId: number, b: Record<string, unknown>) {
   for (const d of [b.period_start, b.period_end]) if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) throw new Error("period invalid");
   const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? 0)) || 0));
   const r = db.prepare(
-    `INSERT INTO invoices (property_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, allocable, non_allocable_cents, non_allocable_reason, source, file_name, ai_confidence, ai_notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO invoices (property_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, allocable, non_allocable_cents, non_allocable_reason, co2_cents, energy_kwh, source, file_name, ai_confidence, ai_notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(propertyId, String(b.provider ?? "").slice(0, 120), category, String(b.description ?? "").slice(0, 200), amount,
     String(b.period_start), String(b.period_end), key, b.allocable === false ? 0 : 1, nonAlloc, b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null,
+    Math.max(0, Math.round(Number(b.co2_cents ?? 0)) || 0), Math.max(0, Number(b.energy_kwh ?? 0) || 0),
     String(b.source ?? "manual"), b.file_name ? String(b.file_name) : null, b.ai_confidence == null ? null : Number(b.ai_confidence), b.ai_notes ? String(b.ai_notes) : null);
   return q.invoice(Number(r.lastInsertRowid));
 }
@@ -205,11 +222,13 @@ app.patch("/api/invoices/:id", (req, res) => {
   const key = keys.includes(b.allocation_key) ? b.allocation_key : inv.allocation_key;
   const amount = Math.round(Number(b.amount_cents ?? inv.amount_cents));
   const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? inv.non_allocable_cents)) || 0));
-  db.prepare(`UPDATE invoices SET provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, allocable=?, non_allocable_cents=?, non_allocable_reason=? WHERE id=?`)
+  db.prepare(`UPDATE invoices SET provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, allocable=?, non_allocable_cents=?, non_allocable_reason=?, co2_cents=?, energy_kwh=? WHERE id=?`)
     .run(String(b.provider ?? inv.provider).slice(0, 120), category, String(b.description ?? inv.description ?? "").slice(0, 200),
       amount, String(b.period_start ?? inv.period_start), String(b.period_end ?? inv.period_end),
       key, b.allocable === undefined ? inv.allocable : (b.allocable ? 1 : 0), nonAlloc,
-      b.non_allocable_reason === undefined ? inv.non_allocable_reason : (b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null), inv.id);
+      b.non_allocable_reason === undefined ? inv.non_allocable_reason : (b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null),
+      b.co2_cents === undefined ? inv.co2_cents : Math.max(0, Math.round(Number(b.co2_cents)) || 0),
+      b.energy_kwh === undefined ? inv.energy_kwh : Math.max(0, Number(b.energy_kwh) || 0), inv.id);
   res.json(q.invoice(inv.id));
 });
 app.delete("/api/invoices/:id", (req, res) => {
@@ -290,13 +309,15 @@ app.post("/api/properties/:id/statements/generate", (req, res) => {
   const propertyId = num(req.params.id);
   const year = num(req.body?.year);
   if (!Number.isFinite(year)) return res.status(400).json({ error: "year missing" });
-  const { statements, summary, checks } = computeStatements(q.units(propertyId), q.tenants(propertyId), q.invoices(propertyId, year), year);
+  const property = q.property(propertyId);
+  if (!property) return res.status(404).end();
+  const { statements, summary, checks } = computeStatements(q.units(propertyId), q.tenants(propertyId), q.invoices(propertyId, year), year, settingsOf(property));
   const up = db.prepare(
-    `INSERT INTO statements (tenant_id, year, total_cents, prepaid_cents, balance_cents, lines_json) VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO statements (tenant_id, year, total_cents, prepaid_cents, balance_cents, suggested_prepayment_cents, lines_json) VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(tenant_id, year) DO UPDATE SET total_cents=excluded.total_cents, prepaid_cents=excluded.prepaid_cents,
-       balance_cents=excluded.balance_cents, lines_json=excluded.lines_json, created_at=datetime('now'), sent_at=NULL`
+       balance_cents=excluded.balance_cents, suggested_prepayment_cents=excluded.suggested_prepayment_cents, lines_json=excluded.lines_json, created_at=datetime('now'), sent_at=NULL`
   );
-  for (const s of statements) up.run(s.tenant.id, year, s.total_cents, s.prepaid_cents, s.balance_cents, JSON.stringify(s.lines));
+  for (const s of statements) up.run(s.tenant.id, year, s.total_cents, s.prepaid_cents, s.balance_cents, s.suggested_prepayment_cents, JSON.stringify(s.lines));
   db.prepare(`INSERT INTO runs (property_id, year, summary_json, checks_json) VALUES (?, ?, ?, ?)
     ON CONFLICT(property_id, year) DO UPDATE SET summary_json=excluded.summary_json, checks_json=excluded.checks_json, created_at=datetime('now')`)
     .run(propertyId, year, JSON.stringify(summary), JSON.stringify(checks));
@@ -310,7 +331,7 @@ function buildTenantStatement(sid: number) {
   const s = q.statement(sid);
   if (!s) return null;
   const tenant = q.tenant(s.tenant_id)!, unit = q.unit(tenant.unit_id)!, property = q.property(unit.property_id)!;
-  return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), balance_cents: s.balance_cents } };
+  return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), balance_cents: s.balance_cents, suggested_prepayment_cents: s.suggested_prepayment_cents } };
 }
 
 app.get("/api/statements/:id/pdf", async (req, res) => {

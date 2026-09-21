@@ -19,9 +19,9 @@ const samples: Sample[] = [
     file: "ewv-erdgas-heizung-2025.pdf", provider: "EWV Energie- und Wasser-Versorgung GmbH", address: "Willy-Brandt-Platz 2, 52222 Stolberg",
     title: "Jahresrechnung Erdgas – Zentralheizung", customer: "Vertragskonto 90 331 178 · Lindenstraße 12, 52062 Aachen (Heizungsanlage)",
     period: "Lieferzeitraum: 01.01.2025 – 31.12.2025",
-    lines: [["Arbeitspreis 14.300 kWh × 11,84 ct/kWh", "1.693,12 €"], ["Grundpreis 12 Monate × 14,90 €", "178,80 €"], ["CO₂-Preis Vermieteranteil (Stufe 3)", "-61,20 €"], ["Umsatzsteuer 19 %", "343,99 €"]],
-    total: "2.154,71 €",
-    note: "Die Verteilung auf Mieteinheiten erfolgt nach HeizkostenV mindestens zu 50 % nach Verbrauch.",
+    lines: [["Arbeitspreis 14.300 kWh × 11,84 ct/kWh", "1.693,12 €"], ["Grundpreis 12 Monate × 14,90 €", "178,80 €"], ["darin enthaltene CO₂-Kosten (2,874 t CO₂ × 55,00 €/t) — Angabe nach CO2KostAufG", "158,07 €"], ["Umsatzsteuer 19 % auf 1.871,92 €", "355,66 €"]],
+    total: "2.227,58 €",
+    note: "Emissionsfaktor Erdgas 0,201 kg CO₂/kWh. Die Aufteilung der CO₂-Kosten zwischen Vermieter und Mieter richtet sich nach dem CO2KostAufG.",
   },
   {
     file: "awa-abfall-2025.pdf", provider: "AWA Entsorgung GmbH", address: "Zum Hagelkreuz 24, 52249 Eschweiler",

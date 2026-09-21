@@ -11,6 +11,8 @@ export type Extraction = {
   allocable: boolean;
   non_allocable_cents: number;
   non_allocable_reason: string;
+  co2_cents: number;
+  energy_kwh: number;
   confidence: number;
   notes: string;
 };
@@ -26,6 +28,9 @@ Return ONLY a JSON object with these fields:
 - allocable: boolean — false if the WHOLE invoice is NOT allocable to tenants under §2 BetrKV (e.g. pure Verwaltungskosten, Instandhaltung, Bankgebühren)
 - non_allocable_cents: integer — if the invoice MIXES allocable and non-allocable items (e.g. a caretaker invoice that also bills a repair), the gross amount of the non-allocable items in cents (include their share of VAT). 0 if none.
 - non_allocable_reason: short English reason for the excluded part, empty string if none
+- co2_cents: for heating fuel invoices (gas, oil, district heating): the CO₂ price component in cents if the invoice states it ("CO2-Kosten", "CO2-Preis", "Emissionskosten"), else 0
+- energy_kwh: for heating fuel invoices: delivered energy in kWh (number), else 0
+- if the invoice mixes water/sewage (by consumption) with rainwater/Niederschlagswasser (by area), say so in notes — the landlord may split it
 - confidence: 0..1
 - notes: one sentence, in English, on anything the landlord should double-check
 No prose, no markdown fences.`;
@@ -82,6 +87,8 @@ export async function extractInvoice(input: { text?: string; imageBase64?: strin
     allocable: parsed.allocable !== false,
     non_allocable_cents: Math.max(0, Math.round(Number(parsed.non_allocable_cents ?? 0))),
     non_allocable_reason: String(parsed.non_allocable_reason ?? "").slice(0, 200),
+    co2_cents: Math.max(0, Math.round(Number(parsed.co2_cents ?? 0)) || 0),
+    energy_kwh: Math.max(0, Number(parsed.energy_kwh ?? 0) || 0),
     confidence: Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5))),
     notes: String(parsed.notes ?? "").slice(0, 500),
   };

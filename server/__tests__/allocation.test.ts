@@ -1,18 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeStatements, splitCents, occupiedDays, daysInYear } from "../allocation.js";
+import { computeStatements, splitCents, occupiedDays, daysInYear, co2LandlordShare } from "../allocation.js";
+import { DEFAULT_SETTINGS } from "../db.js";
 import type { Invoice, Tenant, Unit } from "../db.js";
 
 const units: Unit[] = [
-  { id: 1, property_id: 1, label: "A", area_sqm: 58, persons: 1, heating_kwh: 4100, water_m3: 38 },
-  { id: 2, property_id: 1, label: "B", area_sqm: 74, persons: 2, heating_kwh: 6300, water_m3: 71 },
-  { id: 3, property_id: 1, label: "C", area_sqm: 46, persons: 1, heating_kwh: 3900, water_m3: 34 },
+  { id: 1, property_id: 1, label: "A", unit_type: "residential", area_sqm: 58, persons: 1, heating_kwh: 4100, water_m3: 38 },
+  { id: 2, property_id: 1, label: "B", unit_type: "residential", area_sqm: 74, persons: 2, heating_kwh: 6300, water_m3: 71 },
+  { id: 3, property_id: 1, label: "C", unit_type: "residential", area_sqm: 46, persons: 1, heating_kwh: 3900, water_m3: 34 },
 ];
 const tenant = (id: number, unit_id: number, move_in: string | null = null, move_out: string | null = null): Tenant =>
   ({ id, unit_id, name: `T${id}`, email: "", monthly_prepayment_cents: 10000, move_in, move_out, portal_token: String(id), access_code: "TESTCODE" });
 const inv = (id: number, amount_cents: number, allocation_key: Invoice["allocation_key"], extra: Partial<Invoice> = {}): Invoice =>
   ({ id, property_id: 1, provider: "P", category: "other", description: null, amount_cents, period_start: "2025-01-01", period_end: "2025-12-31",
-    allocation_key, allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
+    allocation_key, allocable: 1, non_allocable_cents: 0, non_allocable_reason: null, co2_cents: 0, energy_kwh: 0, source: "manual", file_name: null, ai_confidence: null, ai_notes: null, created_at: "", ...extra });
 
 test("largest-remainder split always sums to the total", () => {
   for (const total of [1, 2, 100, 98400, 12345]) {
@@ -109,4 +110,65 @@ test("partially non-allocable invoice: only the allocable part is distributed", 
   assert.equal(summary.allocable_cents, 174904);
   assert.equal(summary.tenants_cents, 174904);
   assert.match(statements[0].lines[0].formula, /186,50\s€ not allocable excluded/);
+});
+
+test("CO2KostAufG stages", () => {
+  assert.equal(co2LandlordShare(11.9), 0);
+  assert.equal(co2LandlordShare(12), 0.1);
+  assert.equal(co2LandlordShare(16.1), 0.1);
+  assert.equal(co2LandlordShare(36.9), 0.5);
+  assert.equal(co2LandlordShare(60), 0.95);
+});
+
+test("CO₂ landlord share is excluded from the heating allocation", () => {
+  const all = [tenant(1, 1), tenant(2, 2), tenant(3, 3)];
+  // 14300 kWh gas × 0.201 = 2874 kg / 178 m² = 16.1 kg/m² → landlord 10 % of 158,07 € = 15,81 €
+  const { summary, checks } = computeStatements(units, all, [inv(1, 222758, "heating", { category: "heating", co2_cents: 15807, energy_kwh: 14300 })], 2025, { ...DEFAULT_SETTINGS, heating_type: "gas" });
+  assert.equal(summary.co2_landlord_cents, 1581);
+  assert.equal(summary.non_allocable_cents, 1581);
+  assert.equal(summary.allocable_cents, 222758 - 1581);
+  assert.ok(checks.some((c) => c.code === "CO2_SPLIT"));
+});
+
+test("decentral heating: heating invoices are not allocated", () => {
+  const { summary, checks } = computeStatements(units, [tenant(1, 1)], [inv(1, 100000, "heating", { category: "heating" })], 2025, { ...DEFAULT_SETTINGS, heating_type: "decentral" });
+  assert.equal(summary.allocable_cents, 0);
+  assert.ok(checks.some((c) => c.code === "DECENTRAL_HEATING"));
+});
+
+test("cable/TV after 1 July 2024 is not allocable", () => {
+  const { summary, checks } = computeStatements(units, [tenant(1, 1)], [inv(1, 24000, "units", { category: "cable" })], 2025);
+  assert.equal(summary.allocable_cents, 0);
+  assert.ok(checks.some((c) => c.code === "CABLE_NOT_ALLOCABLE"));
+});
+
+test("consumption share is configurable within 50–70 % and § 11 exemption allocates by area", () => {
+  const all = [tenant(1, 1), tenant(2, 2), tenant(3, 3)];
+  const r50 = computeStatements(units, all, [inv(1, 100000, "heating")], 2025, { ...DEFAULT_SETTINGS, consumption_share: 0.5 });
+  assert.match(r50.statements[0].lines[0].formula, /50 % basic costs/);
+  const ex = computeStatements(units, all, [inv(1, 100000, "heating")], 2025, { ...DEFAULT_SETTINGS, heizkv_exempt: true });
+  assert.match(ex.statements[0].lines[0].formula, /§ 11 HeizkostenV exempt/);
+  assert.equal(ex.statements[0].total_cents, Math.round(100000 * 58 / 178));
+});
+
+test("garages take no part in persons- or consumption-based costs", () => {
+  const withGarage: Unit[] = [...units, { id: 9, property_id: 1, label: "G", unit_type: "garage", area_sqm: 15, persons: 0, heating_kwh: 0, water_m3: 0 }];
+  const all = [tenant(1, 1), tenant(2, 2), tenant(3, 3), tenant(9, 9)];
+  const waste = computeStatements(withGarage, all, [inv(1, 40000, "persons", { category: "waste" })], 2025);
+  assert.equal(waste.statements[3].total_cents, 0);
+  const tax = computeStatements(withGarage, all, [inv(1, 19300, "area", { category: "property_tax" })], 2025);
+  assert.equal(tax.statements[3].total_cents, Math.round(19300 * 15 / 193));
+});
+
+test("deadline check reflects § 556 (3)", () => {
+  const late = computeStatements(units, [tenant(1, 1)], [inv(1, 1000, "area")], 2023, DEFAULT_SETTINGS, new Date("2025-03-01"));
+  assert.ok(late.checks.some((c) => c.code === "DEADLINE_PASSED"));
+  const soon = computeStatements(units, [tenant(1, 1)], [inv(1, 1000, "area")], 2025, DEFAULT_SETTINGS, new Date("2026-11-15"));
+  assert.ok(soon.checks.some((c) => c.code === "DEADLINE_SOON"));
+});
+
+test("suggested prepayment annualises a partial year (§ 560 (4))", () => {
+  const { statements } = computeStatements(units, [tenant(1, 1), tenant(2, 2), tenant(3, 3, "2025-09-01")], [inv(1, 98400, "area")], 2025);
+  const c = statements[2];
+  assert.equal(c.suggested_prepayment_cents, Math.round((c.total_cents * 365) / 122 / 12));
 });

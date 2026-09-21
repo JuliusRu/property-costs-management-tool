@@ -11,8 +11,8 @@ export function seedIfEmpty() {
   if (count > 0) return;
 
   const prop = db
-    .prepare("INSERT INTO properties (name, address, country) VALUES (?, ?, 'DE')")
-    .run("Lindenstraße 12", "Lindenstraße 12, 52062 Aachen");
+    .prepare("INSERT INTO properties (name, address, country, settings_json) VALUES (?, ?, 'DE', ?)")
+    .run("Lindenstraße 12", "Lindenstraße 12, 52062 Aachen", JSON.stringify({ heating_type: "gas", consumption_share: 0.7, hot_water_central: true, heizkv_exempt: false, heated_area_sqm: null }));
   const pid = Number(prop.lastInsertRowid);
 
   const insUnit = db.prepare(
