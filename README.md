@@ -1,0 +1,69 @@
+# Billnest — operating cost statements on autopilot
+
+Built at the MAIN × SpaceX AI Hackathon, Maastricht, 21 Sept 2026 (Track: Build your own Startup).
+
+**The problem.** Germany has ~3.9 million private landlords with 1–5 units. Every year each of them has to
+produce a *Betriebskostenabrechnung* (operating cost statement) per tenant: collect a dozen provider invoices,
+decide which costs are allocable (§ 2 BetrKV), distribute them by the right key, net them against prepayments,
+and send a document the tenant can verify. Most do it in Excel — and roughly every second statement is wrong.
+
+**What Billnest does.**
+
+1. **Invoices come in automatically.** A sync job pulls provider invoices (demo: simulated inbox), or you upload PDFs/photos.
+2. **AI reads them** — provider, amount, period, cost category, allocation key, and whether the cost is allocable at all.
+   You review and confirm; the AI never books anything on its own.
+3. **Deterministic code calculates.** Integer cents, largest-remainder rounding, per-unit keys (area, persons, per unit,
+   heating kWh, water m³), day-exact occupancy. **Vacancy stays with the owner** — it is never silently spread over the other tenants.
+4. **Every number is traceable.** Each statement line shows its formula with the real numbers
+   (`943,51 € × 58 m² / 178 m² = 307,43 €; × 122 / 365 days occupied = …`), and links to the original invoice.
+5. **One click sends everything.** Each tenant receives a German PDF statement by e-mail plus a personal portal link
+   where they can check every line against the source document.
+
+## Run it locally
+
+Requires Node ≥ 23.4 (uses the built-in `node:sqlite`).
+
+```bash
+cp .env.example .env        # then fill in LANDLORD_PASSWORD, SESSION_SECRET, OPENROUTER_API_KEY, BREVO_API_KEY
+npm install && npm --prefix client install
+npm run samples             # generates the demo provider invoices into samples/
+npm run dev                 # API on :3000, web on :5173 (proxied)
+```
+
+Open http://localhost:5173, log in with `LANDLORD_PASSWORD`. Demo flow:
+**Invoices → Sync inbox** (AI reads four invoices, one contains a non-allocable repair) → **Statements → Generate**
+(see reconciliation, checks, the DG unit's vacancy booked to the owner) → **Lines** (formulas) → **Send** → open the **Portal** link.
+**Reset demo data** in the sidebar wipes everything and reseeds.
+
+`npm test` runs the allocation engine tests (rounding invariants, vacancy, tenant change, leap years, duplicates).
+
+## Architecture
+
+```
+client/   Vite + React + TypeScript + Tailwind — landlord app and tenant portal
+server/   Express 5 on Node, node:sqlite (single file), no ORM
+  allocation.ts   pure, deterministic engine — the only place money is calculated
+  ai.ts           OpenRouter call for invoice extraction; output is coerced into our enums, never trusted blindly
+  pdf.ts          German statement PDF (pdfkit)
+  mail.ts         Brevo transactional mail with PDF attachment
+  auth.ts         HMAC-signed landlord session cookie; tenants use unguessable portal tokens
+samples/  synthetic provider invoices for the simulated inbox sync
+```
+
+Deploy: one container (`Dockerfile`), mount `/app/data` and `/app/uploads` as volumes. Runs on Coolify.
+
+## Security notes
+
+- The OpenRouter and Brevo keys live only in the server environment; nothing is called from the browser.
+- Landlord auth is a single password (demo scope). Tenant portal links are 128-bit random tokens; the portal only exposes
+  invoices of the tenant's own building.
+- Uploads are size-limited (10 MB), restricted to PDF/images, and stored under sanitised names outside the web root.
+- All amounts are integer cents; no floating point money anywhere.
+
+## What this is not (yet)
+
+Roadmap, in priority order: multi-tenant accounts (Supabase/RLS), real provider connectors (e-mail inbox parsing, portal
+scraping), heating cost split 30/70 per HeizkostenV incl. CO₂ cost split (CO2KostAufG), interim meter readings on tenant
+change, contract-specific rules with priority over building defaults, versioned legal rule registry, audit trail, NL/EU
+cost catalogues behind the same UI. **This tool does not give legal advice** — it computes under stated rules and flags
+what a professional should review.

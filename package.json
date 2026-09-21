@@ -13,7 +13,8 @@
     "build": "npm --prefix client run build",
     "start": "node --import tsx server/index.ts",
     "seed": "tsx server/seed.ts",
-    "samples": "tsx scripts/make-samples.ts"
+    "samples": "tsx scripts/make-samples.ts",
+    "test": "node --import tsx --test server/__tests__/*.test.ts"
   },
   "dependencies": {
     "dotenv": "^18.0.1",
