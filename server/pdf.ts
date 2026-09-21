@@ -49,6 +49,7 @@ export function statementPdf(property: Property, s: TenantStatement, portalUrl: 
       .text(s.balance_cents > 0 ? `Nachzahlung: ${eur(s.balance_cents)}` : `Guthaben: ${eur(-s.balance_cents)}`);
     doc.moveDown().fontSize(9).fillColor("#555")
       .text(`Jede Position können Sie mit Originalbeleg im Mieterportal nachvollziehen: ${portalUrl}`)
+      .text(`Oder Anmeldung mit E-Mail ${s.tenant.email} und Zugangscode ${s.tenant.access_code}.`)
       .text("Berechnet nach § 556 BGB / BetrKV: Verteilung nach dem angegebenen Schlüssel, Leerstandsanteile verbleiben beim Eigentümer, Rundung auf Cent nach dem Größte-Reste-Verfahren. Einwendungen innerhalb von 12 Monaten nach Zugang.");
     doc.end();
   });

@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { api, CATEGORY_LABEL, KEY_LABEL, type Check, type Property, type Run, type Statement } from "../api";
+import { api, type Check, type Property, type Run, type Statement } from "../api";
 import { Badge, BigMoney, Button, Card, Empty, inputCls, Money, Notice, PageTitle, Spinner } from "../ui";
+import { useT, type Key } from "../i18n";
 
 const YEAR = new Date().getFullYear() - 1;
 const EMPTY: Run = { statements: [], summary: null, checks: [], created_at: null };
 
 export default function Statements({ property, onChange }: { property: Property; onChange: () => void }) {
+  const t = useT();
   const [year, setYear] = useState(YEAR);
   const [run, setRun] = useState<Run>(EMPTY);
   const [busy, setBusy] = useState(false);
@@ -19,7 +21,7 @@ export default function Statements({ property, onChange }: { property: Property;
     setBusy(true); setMsg("");
     let ok = 0; const errs: string[] = [];
     for (const s of run.statements) { try { await api.send(s.id); ok++; } catch (e) { errs.push((e as Error).message); } }
-    setMsg(`Sent ${ok} of ${run.statements.length} statements.${errs.length ? " Errors: " + errs.join("; ") : ""}`);
+    setMsg(t("s.sent", { ok, n: run.statements.length }) + (errs.length ? " " + t("i.errors") + errs.join("; ") : ""));
     await load(); onChange(); setBusy(false);
   };
 
@@ -29,36 +31,36 @@ export default function Statements({ property, onChange }: { property: Property;
 
   return (
     <>
-      <PageTitle title="Statements" sub="One per tenant, computed by deterministic code. Every line shows its formula; vacancy stays with you, never with the other tenants."
+      <PageTitle title={t("s.title")} sub={t("s.sub")}
         right={
           <div className="flex items-center gap-2">
             <select className={inputCls + " w-auto"} value={year} onChange={(e) => setYear(Number(e.target.value))}>
               {[YEAR + 1, YEAR, YEAR - 1].map((y) => <option key={y} value={y}>{y}</option>)}
             </select>
-            <Button variant={statements.length ? "ghost" : "primary"} onClick={generate} disabled={busy}>{busy ? <Spinner /> : null} {statements.length ? "Recalculate" : "Generate statements"}</Button>
-            {statements.length > 0 && <Button onClick={sendAll} disabled={busy || blockers.length > 0} title={blockers.length ? "Resolve blockers first" : ""}>Send all</Button>}
+            <Button variant={statements.length ? "ghost" : "primary"} onClick={generate} disabled={busy}>{busy ? <Spinner /> : null} {statements.length ? t("s.recalc") : t("s.generate")}</Button>
+            {statements.length > 0 && <Button onClick={sendAll} disabled={busy || blockers.length > 0} title={blockers.length ? t("s.blocked") : ""}>{t("s.sendAll")}</Button>}
           </div>
         } />
       {msg && <Notice>{msg}</Notice>}
 
-      {statements.length === 0 && <Empty title={`No statements for ${year} yet`}>Book the year's invoices first, then click <b>Generate statements</b>. You can regenerate as often as you like — nothing is sent until you say so.</Empty>}
+      {statements.length === 0 && <Empty title={t("s.empty", { y: year })}>{t("s.empty.sub")}</Empty>}
 
       {summary && (
         <div className="mb-8 grid gap-4 lg:grid-cols-5">
           <Card className="p-5 lg:col-span-2">
-            <div className="mb-3 font-semibold">Where the money went {year}</div>
+            <div className="mb-3 font-semibold">{t("s.where", { y: year })}</div>
             <dl className="space-y-1.5 text-sm">
-              <Row k="Invoiced" v={summary.invoiced_cents} />
-              <Row k="not allocable, stays with you" v={-summary.non_allocable_cents} muted />
-              <Row k="Allocable" v={summary.allocable_cents} bold />
-              <Row k="charged to tenants" v={summary.tenants_cents} />
-              <Row k="your share for vacant days" v={summary.owner_vacancy_cents} tone={summary.owner_vacancy_cents > 0 ? "amber" : undefined} />
-              <Row k="rounding difference" v={summary.rounding_cents} tone={summary.rounding_cents === 0 ? "green" : "red"} />
+              <Row k={t("s.invoiced")} v={summary.invoiced_cents} />
+              <Row k={t("s.nonAlloc")} v={-summary.non_allocable_cents} muted />
+              <Row k={t("s.allocable")} v={summary.allocable_cents} bold />
+              <Row k={t("s.toTenants")} v={summary.tenants_cents} />
+              <Row k={t("s.vacancy")} v={summary.owner_vacancy_cents} tone={summary.owner_vacancy_cents > 0 ? "amber" : undefined} />
+              <Row k={t("s.rounding")} v={summary.rounding_cents} tone={summary.rounding_cents === 0 ? "green" : "red"} />
             </dl>
             <div className="mt-4 flex gap-6 border-t border-line pt-3 text-sm">
-              <div><div className="text-xs text-mute">Tenants pay</div><Money cents={owed} className="font-bold text-ember" /></div>
-              <div><div className="text-xs text-mute">You refund</div><Money cents={refunds} className="font-bold text-mint" /></div>
-              <div><div className="text-xs text-mute">Sent</div><span className="font-bold">{statements.filter((s) => s.sent_at).length}/{statements.length}</span></div>
+              <div><div className="text-xs text-mute">{t("s.tenantsPay")}</div><Money cents={owed} className="font-bold text-ember" /></div>
+              <div><div className="text-xs text-mute">{t("s.youRefund")}</div><Money cents={refunds} className="font-bold text-mint" /></div>
+              <div><div className="text-xs text-mute">{t("s.sentCount")}</div><span className="font-bold">{statements.filter((s) => s.sent_at).length}/{statements.length}</span></div>
             </div>
           </Card>
           <Checks checks={run.checks} />
@@ -78,16 +80,17 @@ function Row({ k, v, bold, muted, tone }: { k: string; v: number; bold?: boolean
 }
 
 function Checks({ checks }: { checks: Check[] }) {
+  const t = useT();
   const tone = { BLOCKER: "red", WARNING: "amber", INFO: "slate" } as const;
   const order = { BLOCKER: 0, WARNING: 1, INFO: 2 };
   const sorted = [...checks].sort((a, b) => order[a.level] - order[b.level]);
   const nb = checks.filter((c) => c.level === "BLOCKER").length, nw = checks.filter((c) => c.level === "WARNING").length;
   return (
     <Card className="p-5 lg:col-span-3">
-      <div className="mb-3 flex items-center gap-2 font-semibold">Checks {nb === 0 && nw === 0 ? <Badge tone="green">ready to send</Badge> : nb > 0 ? <Badge tone="red">{nb} blocking</Badge> : <Badge tone="amber">{nw} to review</Badge>}</div>
+      <div className="mb-3 flex items-center gap-2 font-semibold">{t("s.checks")} {nb === 0 && nw === 0 ? <Badge tone="green">{t("s.ready")}</Badge> : nb > 0 ? <Badge tone="red">{t("s.blocking", { n: nb })}</Badge> : <Badge tone="amber">{t("s.toReview", { n: nw })}</Badge>}</div>
       <ul className="max-h-64 space-y-2 overflow-auto text-sm">
         {sorted.map((c, i) => (
-          <li key={i} className="flex gap-2"><span className="shrink-0"><Badge tone={tone[c.level]}>{c.level === "BLOCKER" ? "Error" : c.level === "WARNING" ? "Warning" : "Note"}</Badge></span><div><div>{c.message}</div>{c.hint && <div className="text-xs text-mute">{c.hint}</div>}</div></li>
+          <li key={i} className="flex gap-2"><span className="shrink-0"><Badge tone={tone[c.level]}>{t(`s.lvl.${c.level}` as Key)}</Badge></span><div><div>{c.message}</div>{c.hint && <div className="text-xs text-mute">{c.hint}</div>}</div></li>
         ))}
       </ul>
     </Card>
@@ -95,7 +98,8 @@ function Checks({ checks }: { checks: Check[] }) {
 }
 
 function StatementCard({ s, property, blocked, onChange }: { s: Statement; property: Property; blocked: boolean; onChange: () => void }) {
-  const tenant = property.tenants.find((t) => t.id === s.tenant_id)!;
+  const t = useT();
+  const tenant = property.tenants.find((x) => x.id === s.tenant_id)!;
   const unit = property.units.find((u) => u.id === tenant.unit_id)!;
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
@@ -105,27 +109,27 @@ function StatementCard({ s, property, blocked, onChange }: { s: Statement; prope
     <Card>
       <div className="flex flex-wrap items-center gap-5 px-6 py-5">
         <div className="min-w-0 flex-1">
-          <div className="text-lg font-bold">{tenant.name} <span className="font-normal text-mute">· {unit.label}</span> {partial && <Badge tone="amber">partial year</Badge>}</div>
-          <div className="num text-sm text-mute">costs <Money cents={s.total_cents} /> − prepaid <Money cents={s.prepaid_cents} /> · {tenant.email}</div>
+          <div className="text-lg font-bold">{tenant.name} <span className="font-normal text-mute">· {unit.label}</span> {partial && <Badge tone="amber">{t("s.partial")}</Badge>}</div>
+          <div className="num text-sm text-mute">{t("s.costs")} <Money cents={s.total_cents} /> − {t("s.prepaid")} <Money cents={s.prepaid_cents} /> · {tenant.email}</div>
         </div>
-        <BigMoney cents={s.balance_cents} />
+        <BigMoney cents={s.balance_cents} label={s.balance_cents > 0 ? t("s.pays") : t("s.refund")} />
         <div className="flex items-center gap-2 border-l border-line pl-5">
-          {s.sent_at ? <Badge tone="green">sent {s.sent_at.slice(0, 10)}</Badge> : <Badge tone="amber">not sent</Badge>}
-          <a className="text-sm font-semibold text-cobalt hover:underline" href={`/api/statements/${s.id}/pdf`} target="_blank" rel="noreferrer">PDF</a>
-          <a className="text-sm font-semibold text-cobalt hover:underline" href={`/portal/${tenant.portal_token}`} target="_blank" rel="noreferrer">Portal</a>
-          <Button variant="ghost" size="sm" disabled={sending || blocked} onClick={async () => { setSending(true); setErr(""); try { await api.send(s.id); onChange(); } catch (e) { setErr((e as Error).message); } setSending(false); }}>{sending ? <Spinner /> : null} {s.sent_at ? "Resend" : "Send"}</Button>
-          <Button variant="ghost" size="sm" onClick={() => setOpen(!open)}>{open ? "Hide lines" : "Show lines"}</Button>
+          {s.sent_at ? <Badge tone="green">{t("s.sentOn", { d: s.sent_at.slice(0, 10) })}</Badge> : <Badge tone="amber">{t("s.notSent")}</Badge>}
+          <a className="text-sm font-semibold text-cobalt hover:underline" href={`/api/statements/${s.id}/pdf`} target="_blank" rel="noreferrer">{t("common.pdf")}</a>
+          <a className="text-sm font-semibold text-cobalt hover:underline" href={`/portal/${tenant.portal_token}`} target="_blank" rel="noreferrer">{t("common.portal")}</a>
+          <Button variant="ghost" size="sm" disabled={sending || blocked} onClick={async () => { setSending(true); setErr(""); try { await api.send(s.id); onChange(); } catch (e) { setErr((e as Error).message); } setSending(false); }}>{sending ? <Spinner /> : null} {s.sent_at ? t("s.resend") : t("s.send")}</Button>
+          <Button variant="ghost" size="sm" onClick={() => setOpen(!open)}>{open ? t("s.hideLines") : t("s.showLines")}</Button>
         </div>
       </div>
       {err && <div className="px-6 pb-3 text-xs text-ember">{err}</div>}
       {open && (
         <table className="w-full border-t border-line text-sm">
-          <thead className="text-left text-xs text-mute"><tr><th className="px-6 py-2 font-medium">Cost</th><th className="px-6 py-2 font-medium">Calculation</th><th className="px-6 py-2 text-right font-medium">Building</th><th className="px-6 py-2 text-right font-medium">Share</th></tr></thead>
+          <thead className="text-left text-xs text-mute"><tr><th className="px-6 py-2 font-medium">{t("s.th.cost")}</th><th className="px-6 py-2 font-medium">{t("s.th.calc")}</th><th className="px-6 py-2 text-right font-medium">{t("s.th.building")}</th><th className="px-6 py-2 text-right font-medium">{t("s.th.share")}</th></tr></thead>
           <tbody className="divide-y divide-line">
             {s.lines.map((l, i) => (
               <tr key={i}>
-                <td className="px-6 py-2.5 align-top"><div className="font-medium">{CATEGORY_LABEL[l.category] ?? l.category}</div><div className="text-xs text-mute">{l.description} · {l.provider}</div></td>
-                <td className="px-6 py-2.5 align-top text-xs"><div className="text-mute">{KEY_LABEL[l.allocation_key]}</div><div className="num mt-0.5 text-ink-soft">{l.formula}</div></td>
+                <td className="px-6 py-2.5 align-top"><div className="font-medium">{t(`cat.${l.category}` as Key)}</div><div className="text-xs text-mute">{l.description} · {l.provider}</div></td>
+                <td className="px-6 py-2.5 align-top text-xs"><div className="text-mute">{t(`key.${l.allocation_key}` as Key)}</div><div className="num mt-0.5 text-ink-soft">{l.formula}</div></td>
                 <td className="num px-6 py-2.5 text-right align-top"><Money cents={l.total_cents} /></td>
                 <td className="num px-6 py-2.5 text-right align-top font-semibold"><Money cents={l.share_cents} /></td>
               </tr>

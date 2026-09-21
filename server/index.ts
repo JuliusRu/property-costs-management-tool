@@ -5,11 +5,11 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { db, q, CATEGORIES, DEFAULT_KEY, type Category, type AllocationKey } from "./db.js";
+import { db, q, CATEGORIES, DEFAULT_KEY, newAccessCode, type Category, type AllocationKey, type Tenant } from "./db.js";
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths } from "./allocation.js";
 import { extractInvoice, type Extraction } from "./ai.js";
-import { checkPassword, makeSession, requireLandlord } from "./auth.js";
+import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
 
@@ -31,31 +31,67 @@ const num = (v: unknown) => Number.parseInt(String(v), 10);
 app.post("/api/login", (req, res) => {
   if (!checkPassword(String(req.body?.password ?? ""))) return res.status(401).json({ error: "wrong password" });
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `session=${makeSession()}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
+  res.setHeader("Set-Cookie", `session=${makeSession("landlord")}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
   res.json({ ok: true });
 });
 app.post("/api/logout", (_req, res) => {
   res.setHeader("Set-Cookie", "session=; HttpOnly; Path=/; Max-Age=0");
   res.json({ ok: true });
 });
+
+// ---------- tenant login: e-mail + access code (the code is printed on the statement and in the mail) ----------
+const loginHits = new Map<string, number[]>();
+app.post("/api/tenant-login", (req, res) => {
+  const ip = req.ip ?? "?", now = Date.now();
+  const hits = (loginHits.get(ip) ?? []).filter((t) => now - t < 15 * 60_000);
+  if (hits.length >= 20) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
+  hits.push(now); loginHits.set(ip, hits);
+  const email = String(req.body?.email ?? "").trim();
+  const code = String(req.body?.code ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const match = q.tenantByEmail(email).find((t) => t.access_code && safeEqual(t.access_code, code));
+  if (!match) return res.status(401).json({ error: "wrong e-mail or access code" });
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `tenant=${makeSession("tenant", String(match.id))}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
+  res.json({ ok: true });
+});
+app.post("/api/tenant-logout", (_req, res) => {
+  res.setHeader("Set-Cookie", "tenant=; HttpOnly; Path=/; Max-Age=0");
+  res.json({ ok: true });
+});
 app.get("/api/me", (req, res, next) => requireLandlord(req, res, () => res.json({ role: "landlord" })));
 
 // ---------- tenant portal (token-based, no login) ----------
-app.get("/api/portal/:token", (req, res) => {
-  const t = q.tenantByToken(req.params.token);
-  if (!t) return res.status(404).json({ error: "not found" });
+function portalPayload(t: Tenant) {
   const unit = q.unit(t.unit_id)!;
   const property = q.property(unit.property_id)!;
   const statements = q.statementsForTenant(t.id).map((s) => ({ ...s, lines: JSON.parse(s.lines_json), lines_json: undefined }));
-  res.json({ tenant: { name: t.name, email: t.email, monthly_prepayment_cents: t.monthly_prepayment_cents }, unit, property, statements });
-});
-app.get("/api/portal/:token/invoice/:id/file", (req, res) => {
-  const t = q.tenantByToken(req.params.token);
-  const inv = q.invoice(num(req.params.id));
+  return { tenant: { name: t.name, email: t.email, monthly_prepayment_cents: t.monthly_prepayment_cents }, unit, property, statements };
+}
+function tenantInvoiceFile(t: Tenant | undefined, invoiceId: number, res: express.Response) {
+  const inv = q.invoice(invoiceId);
   if (!t || !inv || !inv.file_name) return res.status(404).end();
   const unit = q.unit(t.unit_id)!;
   if (unit.property_id !== inv.property_id) return res.status(403).end(); // tenant may only see invoices of their own building
   res.sendFile(path.join(UPLOAD_DIR, inv.file_name));
+}
+// "me" = logged in via e-mail + code; ":token" = magic link from the statement mail
+app.get("/api/portal/me", (req, res) => {
+  const id = tenantIdFromSession(req);
+  const t = id ? q.tenant(id) : undefined;
+  if (!t) return res.status(401).json({ error: "unauthorized" });
+  res.json(portalPayload(t));
+});
+app.get("/api/portal/me/invoice/:id/file", (req, res) => {
+  const id = tenantIdFromSession(req);
+  tenantInvoiceFile(id ? q.tenant(id) : undefined, num(req.params.id), res);
+});
+app.get("/api/portal/:token", (req, res) => {
+  const t = q.tenantByToken(req.params.token);
+  if (!t) return res.status(404).json({ error: "not found" });
+  res.json(portalPayload(t));
+});
+app.get("/api/portal/:token/invoice/:id/file", (req, res) => {
+  tenantInvoiceFile(q.tenantByToken(req.params.token), num(req.params.id), res);
 });
 
 // ---------- public waitlist (landing page) ----------
@@ -118,8 +154,8 @@ app.post("/api/units/:id/tenants", (req, res) => {
   if (!u) return res.status(404).end();
   const b = req.body ?? {};
   if (!b.name || !b.email) return res.status(400).json({ error: "name and email required" });
-  const r = db.prepare("INSERT INTO tenants (unit_id, name, email, monthly_prepayment_cents, move_in, move_out, portal_token) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(u.id, String(b.name).slice(0, 120), String(b.email).slice(0, 200), Math.round(numOr(b.monthly_prepayment_cents, 0)), isoOrNull(b.move_in), isoOrNull(b.move_out), randomBytes(16).toString("hex"));
+  const r = db.prepare("INSERT INTO tenants (unit_id, name, email, monthly_prepayment_cents, move_in, move_out, portal_token, access_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(u.id, String(b.name).slice(0, 120), String(b.email).slice(0, 200), Math.round(numOr(b.monthly_prepayment_cents, 0)), isoOrNull(b.move_in), isoOrNull(b.move_out), randomBytes(16).toString("hex"), newAccessCode());
   res.status(201).json(q.tenant(Number(r.lastInsertRowid)));
 });
 app.patch("/api/tenants/:id", (req, res) => {
@@ -303,7 +339,8 @@ app.post("/api/statements/:id/send", async (req, res) => {
       html: `<p>Guten Tag ${b.ts.tenant.name},</p>
 <p>anbei erhalten Sie Ihre Betriebskostenabrechnung für ${b.s.year}.</p>
 <p><strong>${bal > 0 ? `Nachzahlung: ${eur(bal)}` : `Guthaben: ${eur(-bal)}`}</strong></p>
-<p>Jede Position können Sie mit Originalbeleg im Mieterportal nachvollziehen:<br><a href="${portalUrl}">${portalUrl}</a></p>
+<p>Jede Position können Sie mit Originalbeleg im Mieterportal nachvollziehen:<br><a href="${portalUrl}">${portalUrl}</a><br>
+Oder melden Sie sich unter <a href="${APP_URL()}/login">${APP_URL()}/login</a> an — E-Mail: ${b.ts.tenant.email}, Zugangscode: <strong>${b.ts.tenant.access_code}</strong></p>
 <p>Mit freundlichen Grüßen<br>Ihre Hausverwaltung</p>`,
       attachment: { name: `Betriebskostenabrechnung-${b.s.year}.pdf`, content: pdf },
     });

@@ -1,5 +1,5 @@
 export type Unit = { id: number; property_id: number; label: string; area_sqm: number; persons: number; heating_kwh: number; water_m3: number };
-export type Tenant = { id: number; unit_id: number; name: string; email: string; monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string };
+export type Tenant = { id: number; unit_id: number; name: string; email: string; monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string };
 export type Property = { id: number; name: string; address: string; country: string; units: Unit[]; tenants: Tenant[] };
 export type Invoice = {
   id: number; property_id: number; provider: string; category: string; description: string | null; amount_cents: number;
@@ -28,6 +28,8 @@ const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "cont
 
 export const api = {
   login: (password: string) => req<{ ok: true }>("/api/login", json({ password })),
+  tenantLogin: (email: string, code: string) => req<{ ok: true }>("/api/tenant-login", json({ email, code })),
+  tenantLogout: () => req("/api/tenant-logout", { method: "POST" }),
   logout: () => req("/api/logout", { method: "POST" }),
   me: () => req<{ role: string }>("/api/me"),
   properties: () => req<Property[]>("/api/properties"),
@@ -50,13 +52,10 @@ export const api = {
   updateTenant: (id: number, body: Partial<Tenant>) => req<Tenant>(`/api/tenants/${id}`, { ...json(body), method: "PATCH" }),
   deleteTenant: (id: number) => req<void>(`/api/tenants/${id}`, { method: "DELETE" }),
   send: (sid: number) => req<{ ok: true; sent_at: string }>(`/api/statements/${sid}/send`, { method: "POST" }),
+  portalMe: () => req<{ tenant: { name: string; email: string; monthly_prepayment_cents: number }; unit: Unit; property: { id: number; name: string; address: string }; statements: Statement[] }>("/api/portal/me"),
   portal: (token: string) => req<{ tenant: { name: string; email: string; monthly_prepayment_cents: number }; unit: Unit; property: { id: number; name: string; address: string }; statements: Statement[] }>(`/api/portal/${token}`),
 };
 
 export const eur = (cents: number) => (cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
-export const CATEGORY_LABEL: Record<string, string> = {
-  property_tax: "Property tax", water_sewage: "Water & sewage", heating: "Heating", hot_water: "Hot water", waste: "Waste collection",
-  cleaning: "Building cleaning", garden: "Garden", lighting: "Lighting", chimney: "Chimney sweep", insurance: "Insurance",
-  caretaker: "Caretaker", elevator: "Elevator", cable: "Cable/TV", other: "Other",
-};
-export const KEY_LABEL: Record<string, string> = { area: "by living area (m²)", persons: "by persons", units: "equally per unit", heating: "heating: 30 % area / 70 % kWh (HeizkostenV)", water: "by water m³" };
+export const CATEGORIES = ["property_tax", "water_sewage", "heating", "hot_water", "waste", "cleaning", "garden", "lighting", "chimney", "insurance", "caretaker", "elevator", "cable", "other"] as const;
+export const KEYS = ["area", "persons", "units", "heating", "water"] as const;

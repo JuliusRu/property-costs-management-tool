@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
@@ -122,8 +123,19 @@ CREATE TABLE IF NOT EXISTS statements (
 
 // tiny forward-only migrations for databases created before a column existed
 for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE tenants ADD COLUMN move_out TEXT",
-  "ALTER TABLE invoices ADD COLUMN non_allocable_cents INTEGER NOT NULL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN non_allocable_reason TEXT"]) {
+  "ALTER TABLE invoices ADD COLUMN non_allocable_cents INTEGER NOT NULL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN non_allocable_reason TEXT",
+  "ALTER TABLE tenants ADD COLUMN access_code TEXT"]) {
   try { db.exec(stmt); } catch { /* column exists */ }
+}
+
+// Tenant access codes: short, human-typeable, no ambiguous characters (0/O, 1/I/L).
+const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+export function newAccessCode(): string {
+  const bytes = randomBytes(8);
+  return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+}
+for (const row of db.prepare("SELECT id FROM tenants WHERE access_code IS NULL").all() as { id: number }[]) {
+  db.prepare("UPDATE tenants SET access_code = ? WHERE id = ?").run(newAccessCode(), row.id);
 }
 
 export type Property = { id: number; name: string; address: string; country: string };
@@ -133,7 +145,7 @@ export type Unit = {
 };
 export type Tenant = {
   id: number; unit_id: number; name: string; email: string;
-  monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string;
+  monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string;
 };
 export type Invoice = {
   id: number; property_id: number; provider: string; category: Category;
@@ -157,6 +169,7 @@ export const q = {
   tenants: (propertyId: number) =>
     db.prepare("SELECT t.* FROM tenants t JOIN units u ON u.id = t.unit_id WHERE u.property_id = ? ORDER BY t.id").all(propertyId) as unknown as Tenant[],
   tenant: (id: number) => db.prepare("SELECT * FROM tenants WHERE id = ?").get(id) as unknown as Tenant | undefined,
+  tenantByEmail: (email: string) => db.prepare("SELECT * FROM tenants WHERE lower(email) = lower(?)").all(email) as unknown as Tenant[],
   tenantByToken: (token: string) => db.prepare("SELECT * FROM tenants WHERE portal_token = ?").get(token) as unknown as Tenant | undefined,
   invoices: (propertyId: number, year?: number) =>
     (year

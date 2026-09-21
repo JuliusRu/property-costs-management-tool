@@ -11,20 +11,28 @@ function sign(payload: string) {
   return createHmac("sha256", secret()).update(payload).digest("base64url");
 }
 
-export function makeSession(): string {
-  const payload = `landlord.${Date.now() + 1000 * 60 * 60 * 12}`; // 12 h
+// Sessions are "<role>.<subject>.<expiry>.<hmac>" — no server-side store needed.
+export function makeSession(role: "landlord" | "tenant", subject = "0"): string {
+  const payload = `${role}.${subject}.${Date.now() + 1000 * 60 * 60 * 12}`; // 12 h
   return `${payload}.${sign(payload)}`;
 }
 
-export function verifySession(token: string | undefined): boolean {
-  if (!token) return false;
+export function verifySession(token: string | undefined, role: "landlord" | "tenant"): { subject: string } | null {
+  if (!token) return null;
   const i = token.lastIndexOf(".");
-  if (i < 0) return false;
+  if (i < 0) return null;
   const payload = token.slice(0, i), sig = token.slice(i + 1);
   const expected = sign(payload);
-  if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
-  const exp = Number(payload.split(".")[1]);
-  return Number.isFinite(exp) && exp > Date.now();
+  if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const [r, subject, expStr] = payload.split(".");
+  const exp = Number(expStr);
+  if (r !== role || !Number.isFinite(exp) || exp <= Date.now()) return null;
+  return { subject };
+}
+
+export function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a), bb = Buffer.from(b);
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
 }
 
 export function checkPassword(given: string): boolean {
@@ -44,6 +52,11 @@ export function readCookie(req: Request, name: string): string | undefined {
 }
 
 export function requireLandlord(req: Request, res: Response, next: NextFunction) {
-  if (verifySession(readCookie(req, "session"))) return next();
+  if (verifySession(readCookie(req, "session"), "landlord")) return next();
   res.status(401).json({ error: "unauthorized" });
+}
+
+export function tenantIdFromSession(req: Request): number | null {
+  const s = verifySession(readCookie(req, "tenant"), "tenant");
+  return s ? Number(s.subject) : null;
 }
