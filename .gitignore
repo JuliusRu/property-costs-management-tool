@@ -14,3 +14,11 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# Hackathon-Unterlagen mit Teilnehmernamen — nie ins Repo
+*.pdf
+!samples/*.pdf
+
+# Laufzeitdaten
+data/
+uploads/
