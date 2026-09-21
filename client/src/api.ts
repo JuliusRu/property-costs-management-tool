@@ -37,10 +37,10 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 export const api = {
-  login: (password: string) => req<{ ok: true }>("/api/login", json({ password })),
+  login: (email: string, password: string) => req<{ ok: true }>("/api/login", json({ email, password })),
   tenantLogin: (email: string, password: string) => req<{ ok: true }>("/api/tenant-login", json({ email, password })),
   tenantRegister: (email: string, code: string, password: string) => req<{ ok: true }>("/api/tenant-register", json({ email, code, password })),
-  publicConfig: () => req<{ demo: boolean }>("/api/public-config"),
+  publicConfig: () => req<{ demo: boolean; prefill: { landlord_email: string; landlord_password: string } | null }>("/api/public-config"),
   resetAccess: (tenantId: number) => req<Tenant>(`/api/tenants/${tenantId}/reset-access`, { method: "POST" }),
   tenantLogout: () => req("/api/tenant-logout", { method: "POST" }),
   logout: () => req("/api/logout", { method: "POST" }),

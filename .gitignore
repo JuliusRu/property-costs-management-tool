@@ -26,3 +26,6 @@ uploads/
 # Videos / Abgabematerial
 *.mp4
 *.mov
+
+# Abgabematerial
+submission/

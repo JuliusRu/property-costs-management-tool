@@ -83,7 +83,8 @@ function LandlordArea() {
   useEffect(() => { load(); }, []);
   const select = (id: number) => { setSelected(id); try { localStorage.setItem("property", String(id)); } catch { /* ignore */ } };
   if (state === "unauth") return <Navigate to="/login" />;
-  const property = properties.find((p) => p.id === selected) ?? properties[0];
+  // Default view: the Munich demo building (the richer example), unless the user picked another one.
+  const property = properties.find((p) => p.id === selected) ?? properties.find((p) => p.name === "Musterweg 7") ?? properties[0];
   if (state === "loading" || !property) return <div className="p-10 text-mute">{t("common.loading")}</div>;
   return <Shell key={property.id} property={property} properties={properties} select={select} reload={load} />;
 }

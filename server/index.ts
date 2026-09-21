@@ -9,7 +9,7 @@ import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, DOC_KINDS, newAccessCode
 import { seedIfEmpty, resetAndSeed } from "./seed.js";
 import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
 import { extractInvoice, extractInvoices, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
-import { checkPassword, makeSession, requireLandlord, safeEqual, tenantIdFromSession, hashPassword, verifyPassword } from "./auth.js";
+import { checkLandlord, makeSession, requireLandlord, safeEqual, tenantIdFromSession, hashPassword, verifyPassword } from "./auth.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
 
@@ -28,8 +28,16 @@ const APP_URL = () => (process.env.APP_URL ?? "http://localhost:5173").replace(/
 const num = (v: unknown) => Number.parseInt(String(v), 10);
 
 // ---------- auth ----------
+const loginHits = new Map<string, number[]>();
+function rateLimited(req: express.Request): boolean {
+  const ip = req.ip ?? "?", now = Date.now();
+  const hits = (loginHits.get(ip) ?? []).filter((t) => now - t < 15 * 60_000);
+  hits.push(now); loginHits.set(ip, hits);
+  return hits.length > 20;
+}
 app.post("/api/login", (req, res) => {
-  if (!checkPassword(String(req.body?.password ?? ""))) return res.status(401).json({ error: "wrong password" });
+  if (rateLimited(req)) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
+  if (!checkLandlord(String(req.body?.email ?? ""), String(req.body?.password ?? ""))) return res.status(401).json({ error: "wrong e-mail or password" });
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `session=${makeSession("landlord")}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
   res.json({ ok: true });
@@ -40,18 +48,15 @@ app.post("/api/logout", (_req, res) => {
 });
 
 // Public config for the login page: demo mode prefills the forms.
-app.get("/api/public-config", (_req, res) => res.json({ demo: process.env.DEMO_MODE === "1" || process.env.NODE_ENV !== "production" }));
+app.get("/api/public-config", (_req, res) => {
+  const demo = process.env.DEMO_MODE === "1" || process.env.NODE_ENV !== "production";
+  // In demo mode the login form is prefilled — the credentials are public by design (jury access).
+  res.json({ demo, prefill: demo ? { landlord_email: process.env.LANDLORD_EMAIL ?? "", landlord_password: process.env.LANDLORD_PASSWORD ?? "" } : null });
+});
 
 // ---------- tenant auth ----------
 // Registration once: e-mail + access code (printed on the statement / in the mail) + chosen password.
 // Afterwards: e-mail + password. The code is single-use; the landlord can issue a new one, which resets the password.
-const loginHits = new Map<string, number[]>();
-function rateLimited(req: express.Request): boolean {
-  const ip = req.ip ?? "?", now = Date.now();
-  const hits = (loginHits.get(ip) ?? []).filter((t) => now - t < 15 * 60_000);
-  hits.push(now); loginHits.set(ip, hits);
-  return hits.length > 20;
-}
 function setTenantCookie(res: express.Response, id: number) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `tenant=${makeSession("tenant", String(id))}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);

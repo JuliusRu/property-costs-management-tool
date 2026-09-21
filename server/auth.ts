@@ -35,11 +35,12 @@ export function safeEqual(a: string, b: string): boolean {
   return ba.length === bb.length && timingSafeEqual(ba, bb);
 }
 
-export function checkPassword(given: string): boolean {
-  const expected = process.env.LANDLORD_PASSWORD ?? "";
-  if (!expected) return false;
-  const a = Buffer.from(given), b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+// Landlord account = LANDLORD_EMAIL + LANDLORD_PASSWORD from the environment (single-tenant demo; multi-account comes with Supabase).
+export function checkLandlord(email: string, password: string): boolean {
+  const expectedMail = (process.env.LANDLORD_EMAIL ?? "").trim().toLowerCase();
+  const expectedPw = process.env.LANDLORD_PASSWORD ?? "";
+  if (!expectedMail || !expectedPw) return false;
+  return safeEqual(email.trim().toLowerCase(), expectedMail) && safeEqual(password, expectedPw);
 }
 
 export function readCookie(req: Request, name: string): string | undefined {

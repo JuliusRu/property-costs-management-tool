@@ -19,7 +19,7 @@ Germany has ~3.9 million private landlords with 1–20 units. Once a year each h
 
 ## Demo / project link
 - Live app: https://invoice.properties
-  - Landlord login: password `demo`  ← set LANDLORD_PASSWORD=demo and DEMO_MODE=1 in Coolify before submitting, or write the real password here
+  - Landlord login: **jury@main.nl / Basics**  ← set LANDLORD_EMAIL=jury@main.nl, LANDLORD_PASSWORD=Basics, DEMO_MODE=1 in Coolify, then Restart
   - Tenant login: lena.hoffmann@example.com / demo1234 · registration flow: oeztuerk@example.com / code OEZT2025
   - Two demo buildings: "Lindenstraße 12" (vacancy, lease scan, CO₂) and "Musterweg 7" (5 units incl. restaurant, MEA shares, waste for apartments only, water metered per unit, credit note)
 - Code: https://github.com/JuliusRu/property-costs-management-tool  ← set to Public before submitting
@@ -39,7 +39,7 @@ Germany has ~3.9 million private landlords with 1–20 units. Once a year each h
 - **What we shipped today:** 25 engine tests, deterministic integer-cent allocation with largest-remainder rounding, AI extraction with a no-key fallback so the demo never breaks, live on our own server.
 
 ## Before you press submit
-- [ ] Repo → Settings → Danger zone → **Change visibility → Public** (history checked: no secrets, .env never committed, real documents untracked)
-- [ ] Coolify: `LANDLORD_PASSWORD=demo`, `DEMO_MODE=1`, `APP_URL=https://invoice.properties`, then Restart — or replace the password in the block above
+- [x] Repo is Public (history checked: no secrets, .env never committed, real documents untracked)
+- [ ] Coolify: `LANDLORD_EMAIL=jury@main.nl`, `LANDLORD_PASSWORD=Basics`, `DEMO_MODE=1`, `APP_URL=https://invoice.properties`, then Restart
 - [ ] Upload the video (or paste a YouTube/Drive link)
-- [ ] Screenshots: landing, building page (Musterweg 7), statements with expanded lines, the PDF, tenant portal
+- [x] Screenshots in `submission/` (01 landing … 12 statement PDF)

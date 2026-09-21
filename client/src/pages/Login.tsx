@@ -4,7 +4,7 @@ import { api } from "../api";
 import { Button, Card, Field, inputCls, Wordmark } from "../ui";
 import { LangSwitch, useT } from "../i18n";
 
-const DEMO = { landlord: "demo", tenant: { email: "lena.hoffmann@example.com", password: "demo1234" }, register: { email: "oeztuerk@example.com", code: "OEZT2025", password: "demo1234" } };
+const DEMO = { tenant: { email: "lena.hoffmann@example.com", password: "demo1234" }, register: { email: "oeztuerk@example.com", code: "OEZT2025", password: "demo1234" } };
 
 export default function Login() {
   const t = useT();
@@ -13,6 +13,8 @@ export default function Login() {
   const [role, setRole] = useState<"landlord" | "tenant">(params.get("as") === "tenant" ? "tenant" : "landlord");
   const [mode, setMode] = useState<"signin" | "register">("signin");
   const [demo, setDemo] = useState(false);
+  const [prefill, setPrefill] = useState<{ landlord_email: string; landlord_password: string } | null>(null);
+  const [lEmail, setLEmail] = useState("");
   const [pw, setPw] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,13 +23,13 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
 
   // Demo mode (dev, or DEMO_MODE=1 on the server): prefill so nobody has to type during a demo.
-  useEffect(() => { api.publicConfig().then((c) => setDemo(c.demo)).catch(() => {}); }, []);
+  useEffect(() => { api.publicConfig().then((c) => { setDemo(c.demo); setPrefill(c.prefill); }).catch(() => {}); }, []);
   useEffect(() => {
     if (!demo) return;
-    setPw(DEMO.landlord);
+    if (prefill) { setLEmail(prefill.landlord_email); setPw(prefill.landlord_password); }
     if (mode === "signin") { setEmail(DEMO.tenant.email); setPassword(DEMO.tenant.password); setCode(""); }
     else { setEmail(DEMO.register.email); setCode(DEMO.register.code); setPassword(DEMO.register.password); }
-  }, [demo, mode]);
+  }, [demo, mode, prefill]);
 
   const tab = (r: typeof role) => `flex-1 rounded-lg py-2 text-sm font-semibold transition-colors ${role === r ? "bg-ink text-white" : "text-ink-soft hover:bg-surface"}`;
   const submit = async (fn: () => Promise<unknown>, to: string, wrong: string) => {
@@ -47,8 +49,9 @@ export default function Login() {
         <p className="mb-5 mt-4 text-sm text-mute">{role === "landlord" ? t("login.landlord.sub") : t("login.tenant.sub")}</p>
 
         {role === "landlord" ? (
-          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); submit(() => api.login(pw), "/app", t("login.wrong")); }}>
-            <Field label={t("login.password")}><input type="password" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} autoFocus autoComplete="current-password" /></Field>
+          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); submit(() => api.login(lEmail, pw), "/app", t("login.wrong")); }}>
+            <Field label={t("login.email")}><input type="email" className={inputCls} value={lEmail} onChange={(e) => setLEmail(e.target.value)} autoFocus autoComplete="username" /></Field>
+            <Field label={t("login.password")}><input type="password" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></Field>
             {err && <p className="text-sm text-ember">{err}</p>}
             <Button className="w-full" type="submit" disabled={busy}>{t("login.submit")}</Button>
           </form>
