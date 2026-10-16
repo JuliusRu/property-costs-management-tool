@@ -1,15 +1,16 @@
 import "dotenv/config";
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, statSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
-import { db, q, CATEGORIES, DEFAULT_KEY, HEATING_TYPES, DOC_KINDS, newAccessCode, settingsOf, leaseOf, type Category, type AllocationKey, type Tenant, type HeatingType, type DocKind } from "./db.js";
-import { seedIfEmpty, resetAndSeed } from "./seed.js";
-import { computeStatements, occupiedMonths, RULES_VERSION } from "./allocation.js";
-import { extractInvoice, extractInvoices, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
-import { checkLandlord, landlordAccounts, makeSession, requireLandlord, safeEqual, tenantIdFromSession, hashPassword, verifyPassword } from "./auth.js";
+import { CATEGORIES, DEFAULT_KEY, HEATING_TYPES, DOC_KINDS, settingsOf, leaseOf, parseJson, type Category, type AllocationKey, type HeatingType, type DocKind, type Document, type Invoice, type Payment, type Property, type Statement, type Tenant, type Unit } from "./db.js";
+import { loadDemo } from "./seed.js";
+import { computeStatements, occupiedMonths, RULES_VERSION, type StatementLine } from "./allocation.js";
+import { extractInvoices, extractLease, coerceLease, classifyDocument, heuristicClassify, type Extraction, type LeaseExtraction } from "./ai.js";
+import { bearer, cookieFlags, makeSession, requireUser, tenantTokenFromSession } from "./auth.js";
+import { anon, supabaseConfig } from "./supa.js";
+import { DbError, type Store } from "./store.js";
 import { sendMail } from "./mail.js";
 import { statementPdf, eur } from "./pdf.js";
 
@@ -18,158 +19,199 @@ const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string; numpages: number }>;
 
 const app = express();
+app.set("trust proxy", 1); // behind Traefik: req.ip is the client, not the proxy (rate limits)
 app.use(express.json({ limit: "1mb" }));
-seedIfEmpty();
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR ?? path.resolve("uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const APP_URL = () => (process.env.APP_URL ?? "http://localhost:5173").replace(/\/$/, "");
 const num = (v: unknown) => Number.parseInt(String(v), 10);
+const isoOrNull = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+const numOr = (v: unknown, d: number) => (v === undefined || v === null || v === "" ? d : Number(v));
 
-// ---------- auth ----------
+// Files stay on the server's volume, one folder per organization. They are only served after the
+// database (under RLS) has confirmed the row the file belongs to — the path alone grants nothing.
+function saveFile(orgId: string, originalName: string, buf: Buffer, prefix = "") {
+  mkdirSync(path.join(UPLOAD_DIR, orgId), { recursive: true });
+  const rel = `${orgId}/${Date.now()}-${prefix}${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  writeFileSync(path.join(UPLOAD_DIR, rel), buf);
+  return rel;
+}
+const filePath = (rel: string) => {
+  const p = path.resolve(UPLOAD_DIR, rel);
+  if (!p.startsWith(path.resolve(UPLOAD_DIR) + path.sep)) throw new DbError("bad path", 400);
+  return p;
+};
+function fileSize(rel: string): number | null { try { return statSync(filePath(rel)).size; } catch { return null; } }
+
 const loginHits = new Map<string, number[]>();
-function rateLimited(req: express.Request): boolean {
-  const ip = req.ip ?? "?", now = Date.now();
-  const hits = (loginHits.get(ip) ?? []).filter((t) => now - t < 15 * 60_000);
-  hits.push(now); loginHits.set(ip, hits);
-  return hits.length > 20;
+function rateLimited(req: Request, max = 20, windowMs = 15 * 60_000): boolean {
+  const key = `${req.path}|${req.ip ?? "?"}`, now = Date.now();
+  const hits = (loginHits.get(key) ?? []).filter((t) => now - t < windowMs);
+  hits.push(now); loginHits.set(key, hits);
+  return hits.length > max;
 }
-app.post("/api/login", (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
-  if (!checkLandlord(String(req.body?.email ?? ""), String(req.body?.password ?? ""))) return res.status(401).json({ error: "wrong e-mail or password" });
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `session=${makeSession("landlord")}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
-  res.json({ ok: true });
-});
-app.post("/api/logout", (_req, res) => {
-  res.setHeader("Set-Cookie", "session=; HttpOnly; Path=/; Max-Age=0");
-  res.json({ ok: true });
-});
 
-// Public config for the login page: demo mode prefills the forms.
+// ───────────────────────── public ─────────────────────────
+
+// The browser needs the project URL and the public (anon) key to sign in. Both are public by design.
 app.get("/api/public-config", (_req, res) => {
-  const demo = process.env.DEMO_MODE === "1" || process.env.NODE_ENV !== "production";
-  // In demo mode the login form is prefilled — the credentials are public by design (jury access).
-  const jury = landlordAccounts().find((a) => a.email === (process.env.JURY_EMAIL ?? "jury@main.nl")) ?? landlordAccounts()[0];
-  res.json({ demo, prefill: demo && jury ? { landlord_email: jury.email, landlord_password: jury.password } : null });
+  const { url, anonKey } = supabaseConfig();
+  res.json({ supabase_url: url, supabase_anon_key: anonKey });
 });
 
-// ---------- tenant auth ----------
-// Registration once: e-mail + access code (printed on the statement / in the mail) + chosen password.
-// Afterwards: e-mail + password. The code is single-use; the landlord can issue a new one, which resets the password.
-function setTenantCookie(res: express.Response, id: number) {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `tenant=${makeSession("tenant", String(id))}; HttpOnly; SameSite=Lax; Path=/${secure}; Max-Age=43200`);
+// Mirror the Supabase access token into an HttpOnly cookie so that plain links (PDF, invoice files)
+// work. Only accepted for GET requests — writes always need the Authorization header.
+app.post("/api/session", async (req, res) => {
+  const token = bearer(req);
+  if (!token) return res.status(401).json({ error: "unauthorized" });
+  const { data, error } = await anon.auth.getUser(token);
+  if (error || !data.user) return res.status(401).json({ error: "unauthorized" });
+  res.setHeader("Set-Cookie", `sb_token=${token}; ${cookieFlags()}; Max-Age=3600`);
+  res.json({ ok: true });
+});
+app.delete("/api/session", (_req, res) => {
+  res.setHeader("Set-Cookie", `sb_token=; ${cookieFlags()}; Max-Age=0`);
+  res.json({ ok: true });
+});
+
+// Tenants: register once with e-mail + code (from the statement) + password; afterwards e-mail + password.
+// The checks run inside Postgres (bcrypt, narrow SECURITY DEFINER functions); the server only rate-limits
+// and turns the returned portal token into a signed session cookie.
+function setTenantCookie(res: Response, portalToken: string) {
+  res.setHeader("Set-Cookie", `tenant=${makeSession("tenant", portalToken)}; ${cookieFlags()}; Max-Age=43200`);
 }
-app.post("/api/tenant-register", (req, res) => {
+app.post("/api/tenant-register", async (req, res) => {
   if (rateLimited(req)) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
-  const email = String(req.body?.email ?? "").trim();
-  const code = String(req.body?.code ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   const password = String(req.body?.password ?? "");
   if (password.length < 8) return res.status(400).json({ error: "password too short (min. 8 characters)" });
-  const match = q.tenantByEmail(email).find((t) => t.access_code && safeEqual(t.access_code, code));
-  if (!match) return res.status(401).json({ error: "wrong e-mail or access code" });
-  if (match.registered_at) return res.status(409).json({ error: "already registered — sign in with your password, or ask your landlord for a new code" });
-  db.prepare("UPDATE tenants SET password_hash = ?, registered_at = datetime('now') WHERE id = ?").run(hashPassword(password), match.id);
-  setTenantCookie(res, match.id);
+  const { data, error } = await anon.rpc("tenant_register", { p_email: String(req.body?.email ?? ""), p_code: String(req.body?.code ?? ""), p_password: password });
+  if (error) return res.status(error.message.includes("already registered") ? 409 : 400).json({ error: error.message.includes("already registered") ? "already registered — sign in with your password, or ask your landlord for a new code" : "registration failed" });
+  if (!data) return res.status(401).json({ error: "wrong e-mail or access code" });
+  setTenantCookie(res, data as string);
   res.json({ ok: true });
 });
-app.post("/api/tenant-login", (req, res) => {
+app.post("/api/tenant-login", async (req, res) => {
   if (rateLimited(req)) return res.status(429).json({ error: "too many attempts — try again in 15 minutes" });
-  const email = String(req.body?.email ?? "").trim();
-  const password = String(req.body?.password ?? "");
-  const match = q.tenantByEmail(email).find((t) => verifyPassword(password, t.password_hash));
-  if (!match) return res.status(401).json({ error: "wrong e-mail or password" });
-  setTenantCookie(res, match.id);
+  const { data, error } = await anon.rpc("tenant_login", { p_email: String(req.body?.email ?? ""), p_password: String(req.body?.password ?? "") });
+  if (error || !data) return res.status(401).json({ error: "wrong e-mail or password" });
+  setTenantCookie(res, data as string);
   res.json({ ok: true });
 });
 app.post("/api/tenant-logout", (_req, res) => {
-  res.setHeader("Set-Cookie", "tenant=; HttpOnly; Path=/; Max-Age=0");
+  res.setHeader("Set-Cookie", `tenant=; ${cookieFlags()}; Max-Age=0`);
   res.json({ ok: true });
 });
-app.get("/api/me", (req, res, next) => requireLandlord(req, res, () => res.json({ role: "landlord" })));
 
-// ---------- tenant portal (token-based, no login) ----------
-function portalPayload(t: Tenant) {
-  const unit = q.unit(t.unit_id)!;
-  const property = q.property(unit.property_id)!;
-  const statements = q.statementsForTenant(t.id).map((s) => ({ ...s, lines: JSON.parse(s.lines_json), lines_json: undefined }));
-  return { tenant: { name: t.name, email: t.email, monthly_prepayment_cents: t.monthly_prepayment_cents }, unit, property, statements };
+// Tenant portal: "me" = signed-in tenant (cookie carries the portal token), ":token" = link from the statement mail.
+async function portalData(token: string) {
+  const { data, error } = await anon.rpc("portal_by_token", { p_token: token });
+  if (error) throw new DbError(error.message);
+  return data as Record<string, unknown> | null;
 }
-function tenantInvoiceFile(t: Tenant | undefined, invoiceId: number, res: express.Response) {
-  const inv = q.invoice(invoiceId);
-  if (!t || !inv || !inv.file_name) return res.status(404).end();
-  const unit = q.unit(t.unit_id)!;
-  if (unit.property_id !== inv.property_id) return res.status(403).end(); // tenant may only see invoices of their own building
-  res.sendFile(path.join(UPLOAD_DIR, inv.file_name));
+async function portalFile(token: string, invoiceId: number, res: Response) {
+  const { data } = await anon.rpc("portal_invoice_file", { p_token: token, p_invoice_id: invoiceId });
+  if (!data) return res.status(404).end();
+  res.sendFile(filePath(data as string));
 }
-// "me" = logged in via e-mail + code; ":token" = magic link from the statement mail
-app.get("/api/portal/me", (req, res) => {
-  const id = tenantIdFromSession(req);
-  const t = id ? q.tenant(id) : undefined;
-  if (!t) return res.status(401).json({ error: "unauthorized" });
-  res.json(portalPayload(t));
+app.get("/api/portal/me", async (req, res) => {
+  const token = tenantTokenFromSession(req);
+  const d = token ? await portalData(token) : null;
+  if (!d) return res.status(401).json({ error: "unauthorized" });
+  res.json(d);
 });
-app.get("/api/portal/me/invoice/:id/file", (req, res) => {
-  const id = tenantIdFromSession(req);
-  tenantInvoiceFile(id ? q.tenant(id) : undefined, num(req.params.id), res);
+app.get("/api/portal/me/invoice/:id/file", async (req, res) => {
+  const token = tenantTokenFromSession(req);
+  if (!token) return res.status(401).end();
+  await portalFile(token, num(req.params.id), res);
 });
-app.get("/api/portal/:token", (req, res) => {
-  const t = q.tenantByToken(req.params.token);
-  if (!t) return res.status(404).json({ error: "not found" });
-  res.json(portalPayload(t));
+app.get("/api/portal/:token", async (req, res) => {
+  if (rateLimited(req, 120, 60_000)) return res.status(429).end();
+  const d = await portalData(req.params.token);
+  if (!d) return res.status(404).json({ error: "not found" });
+  res.json(d);
 });
-app.get("/api/portal/:token/invoice/:id/file", (req, res) => {
-  tenantInvoiceFile(q.tenantByToken(req.params.token), num(req.params.id), res);
+app.get("/api/portal/:token/invoice/:id/file", async (req, res) => {
+  if (rateLimited(req, 120, 60_000)) return res.status(429).end();
+  await portalFile(req.params.token, num(req.params.id), res);
 });
 
-// ---------- public waitlist (landing page) ----------
-const waitlistHits = new Map<string, number[]>();
-app.post("/api/waitlist", (req, res) => {
-  const ip = req.ip ?? "?";
-  const now = Date.now();
-  const hits = (waitlistHits.get(ip) ?? []).filter((t) => now - t < 3_600_000);
-  if (hits.length >= 10) return res.status(429).json({ error: "too many requests" });
-  hits.push(now); waitlistHits.set(ip, hits);
+app.post("/api/waitlist", async (req, res) => {
+  if (rateLimited(req, 10, 3_600_000)) return res.status(429).json({ error: "too many requests" });
   const email = String(req.body?.email ?? "").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 200) return res.status(400).json({ error: "Please enter a valid e-mail address." });
   const units = Number.isFinite(Number(req.body?.units)) ? Math.max(0, Math.min(10000, Math.round(Number(req.body.units)))) : null;
-  db.prepare("INSERT INTO waitlist (email, units) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET units = excluded.units").run(email, units);
+  const { error } = await anon.rpc("join_waitlist", { p_email: email, p_units: units });
+  if (error) return res.status(500).json({ error: "could not save" });
   res.status(201).json({ ok: true });
 });
 
-// everything below requires the landlord session
-app.use("/api", requireLandlord);
+// ───────────────────────── everything below: signed-in landlord, own organization only ─────────────────────────
+app.use("/api", requireUser);
+const st = (req: Request): Store => req.ctx.st;
 
-// ---------- properties ----------
-// All tenancies across buildings, with their latest statement and payment status — the "Tenants" page.
-app.get("/api/tenants", (_req, res) => {
-  const rows = q.allTenants().map((t) => {
-    const st = q.statementsForTenant(t.id)[0];
-    return { ...t, password_hash: undefined, lease_json: undefined, registered: !!t.registered_at, lease_rules: (() => { const l = leaseOf(t); return Object.keys(l.key_overrides).length > 0 || l.excluded_categories.length > 0 || l.prepayment_type === "pauschale"; })(),
-      latest: st ? { id: st.id, year: st.year, balance_cents: st.balance_cents, sent_at: st.sent_at, payment_status: st.payment_status, paid_at: st.paid_at } : null };
-  });
-  res.json(rows);
+app.get("/api/me", async (req, res) => {
+  const org = await st(req).organization();
+  res.json({ email: req.ctx.user.email, org });
 });
-
-app.get("/api/properties", (_req, res) => {
-  res.json(q.properties().map((p) => ({ ...p, settings: settingsOf(p), settings_json: undefined, units: q.units(p.id), tenants: q.tenants(p.id).map((t) => ({ ...t, lease: leaseOf(t), lease_json: undefined, password_hash: undefined, registered: !!t.registered_at })) })));
-});
-app.post("/api/properties", (req, res) => {
+app.patch("/api/organization", async (req, res) => {
   const b = req.body ?? {};
-  if (!b.name) return res.status(400).json({ error: "name missing" });
-  const r = db.prepare("INSERT INTO properties (name, address, country, settings_json) VALUES (?, ?, 'DE', '{}')").run(String(b.name).slice(0, 120), String(b.address ?? "").slice(0, 200));
-  res.status(201).json(q.property(Number(r.lastInsertRowid)));
-});
-app.delete("/api/properties/:id", (req, res) => {
-  if (q.properties().length <= 1) return res.status(400).json({ error: "keep at least one building" });
-  db.prepare("DELETE FROM properties WHERE id = ?").run(num(req.params.id));
-  res.status(204).end();
+  const patch: Record<string, unknown> = {};
+  for (const k of ["name", "landlord_name", "landlord_address", "iban", "contact_email"]) if (k in b) patch[k] = b[k] == null ? null : String(b[k]).slice(0, 300);
+  res.json(await st(req).updateOrganization(patch));
 });
 app.get("/api/meta", (_req, res) => res.json({ categories: CATEGORIES, default_key: DEFAULT_KEY, heating_types: HEATING_TYPES, rules: RULES_VERSION }));
-app.patch("/api/properties/:id/settings", (req, res) => {
-  const p = q.property(num(req.params.id));
+
+// Sample buildings for a fresh account (only when it has none yet).
+app.post("/api/demo", async (req, res) => {
+  if ((await st(req).properties()).length > 0) return res.status(409).json({ error: "your account already has buildings" });
+  await loadDemo(st(req));
+  res.json({ ok: true });
+});
+
+// ---------- tenants overview ----------
+app.get("/api/tenants", async (req, res) => {
+  const all = await st(req).allTenants();
+  const latest = new Map<number, Statement>();
+  if (all.length) {
+    const { data } = await req.ctx.sb.from("statements").select("*").in("tenant_id", all.map((t) => t.id)).order("year", { ascending: false });
+    for (const s of (data ?? []) as Statement[]) if (!latest.has(s.tenant_id)) latest.set(s.tenant_id, s);
+  }
+  res.json(all.map((t) => {
+    const s = latest.get(t.id), l = leaseOf(t);
+    return { ...t, lease: l, lease_json: undefined, registered: !!t.registered_at,
+      lease_rules: Object.keys(l.key_overrides).length > 0 || l.excluded_categories.length > 0 || l.prepayment_type === "pauschale",
+      latest: s ? { id: s.id, year: s.year, balance_cents: s.balance_cents, sent_at: s.sent_at, payment_status: s.payment_status, paid_at: s.paid_at } : null };
+  }));
+});
+
+// ---------- properties ----------
+const shapeTenant = (t: Tenant) => ({ ...t, lease: leaseOf(t), lease_json: undefined, registered: !!t.registered_at });
+app.get("/api/properties", async (req, res) => {
+  const props = await st(req).properties();
+  res.json(await Promise.all(props.map(async (p) => ({
+    ...p, settings: settingsOf(p), settings_json: undefined,
+    units: await st(req).units(p.id), tenants: (await st(req).tenants(p.id)).map(shapeTenant),
+  }))));
+});
+app.post("/api/properties", async (req, res) => {
+  const b = req.body ?? {};
+  if (!b.name) return res.status(400).json({ error: "name missing" });
+  res.status(201).json(await st(req).insert<Property>("properties", { name: String(b.name).slice(0, 120), address: String(b.address ?? "").slice(0, 200) }));
+});
+app.delete("/api/properties/:id", async (req, res) => {
+  await st(req).remove("properties", num(req.params.id));
+  res.status(204).end();
+});
+app.patch("/api/properties/:id", async (req, res) => {
+  const p = await st(req).property(num(req.params.id));
+  if (!p) return res.status(404).end();
+  const b = req.body ?? {};
+  res.json(await st(req).update("properties", p.id, { name: String(b.name ?? p.name).slice(0, 120), address: String(b.address ?? p.address).slice(0, 200) }));
+});
+app.patch("/api/properties/:id/settings", async (req, res) => {
+  const p = await st(req).property(num(req.params.id));
   if (!p) return res.status(404).end();
   const cur = settingsOf(p), b = req.body ?? {};
   const next = {
@@ -179,184 +221,193 @@ app.patch("/api/properties/:id/settings", (req, res) => {
     heizkv_exempt: typeof b.heizkv_exempt === "boolean" ? b.heizkv_exempt : cur.heizkv_exempt,
     heated_area_sqm: b.heated_area_sqm === null || b.heated_area_sqm === "" ? null : Number.isFinite(Number(b.heated_area_sqm)) ? Number(b.heated_area_sqm) : cur.heated_area_sqm,
   };
-  db.prepare("UPDATE properties SET settings_json = ? WHERE id = ?").run(JSON.stringify(next), p.id);
+  await st(req).update("properties", p.id, { settings_json: next });
   res.json(next);
 });
-app.get("/api/waitlist", (_req, res) => res.json(db.prepare("SELECT email, units, created_at FROM waitlist ORDER BY id DESC").all()));
-// Demo helper: wipe everything and reseed so the flow can be shown again from scratch.
-app.post("/api/reset", (_req, res) => { resetAndSeed(); res.json({ ok: true }); });
 
-// ---------- building: property, units, tenants ----------
-const isoOrNull = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
-const numOr = (v: unknown, d: number) => (v === undefined || v === null || v === "" ? d : Number(v));
-
-app.patch("/api/properties/:id", (req, res) => {
-  const p = q.property(num(req.params.id));
-  if (!p) return res.status(404).end();
-  const b = req.body ?? {};
-  db.prepare("UPDATE properties SET name = ?, address = ? WHERE id = ?").run(String(b.name ?? p.name).slice(0, 120), String(b.address ?? p.address).slice(0, 200), p.id);
-  res.json(q.property(p.id));
-});
-app.post("/api/properties/:id/units", (req, res) => {
+// ---------- units & tenants ----------
+app.post("/api/properties/:id/units", async (req, res) => {
   const b = req.body ?? {};
   if (!b.label) return res.status(400).json({ error: "label missing" });
   const ut = ["residential", "commercial", "garage"].includes(b.unit_type) ? b.unit_type : "residential";
-  const r = db.prepare("INSERT INTO units (property_id, label, unit_type, area_sqm, mea, persons, heating_kwh, water_m3) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(num(req.params.id), String(b.label).slice(0, 60), ut, numOr(b.area_sqm, 0), numOr(b.mea, 0), numOr(b.persons, 1), numOr(b.heating_kwh, 0), numOr(b.water_m3, 0));
-  res.status(201).json(q.unit(Number(r.lastInsertRowid)));
+  res.status(201).json(await st(req).insert<Unit>("units", {
+    property_id: num(req.params.id), label: String(b.label).slice(0, 60), unit_type: ut,
+    area_sqm: numOr(b.area_sqm, 0), mea: numOr(b.mea, 0), persons: numOr(b.persons, 1), heating_kwh: numOr(b.heating_kwh, 0), water_m3: numOr(b.water_m3, 0),
+  }));
 });
-app.patch("/api/units/:id", (req, res) => {
-  const u = q.unit(num(req.params.id));
+app.patch("/api/units/:id", async (req, res) => {
+  const u = await st(req).unit(num(req.params.id));
   if (!u) return res.status(404).end();
   const b = req.body ?? {};
-  const ut = ["residential", "commercial", "garage"].includes(b.unit_type) ? b.unit_type : u.unit_type;
-  db.prepare("UPDATE units SET label = ?, unit_type = ?, area_sqm = ?, mea = ?, persons = ?, heating_kwh = ?, water_m3 = ? WHERE id = ?")
-    .run(String(b.label ?? u.label).slice(0, 60), ut, numOr(b.area_sqm, u.area_sqm), numOr(b.mea, u.mea), numOr(b.persons, u.persons), numOr(b.heating_kwh, u.heating_kwh), numOr(b.water_m3, u.water_m3), u.id);
-  res.json(q.unit(u.id));
+  res.json(await st(req).update("units", u.id, {
+    label: String(b.label ?? u.label).slice(0, 60), unit_type: ["residential", "commercial", "garage"].includes(b.unit_type) ? b.unit_type : u.unit_type,
+    area_sqm: numOr(b.area_sqm, u.area_sqm), mea: numOr(b.mea, u.mea), persons: numOr(b.persons, u.persons),
+    heating_kwh: numOr(b.heating_kwh, u.heating_kwh), water_m3: numOr(b.water_m3, u.water_m3),
+  }));
 });
-app.delete("/api/units/:id", (req, res) => { db.prepare("DELETE FROM units WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
+app.delete("/api/units/:id", async (req, res) => { await st(req).remove("units", num(req.params.id)); res.status(204).end(); });
 
-app.post("/api/units/:id/tenants", (req, res) => {
-  const u = q.unit(num(req.params.id));
+app.post("/api/units/:id/tenants", async (req, res) => {
+  const u = await st(req).unit(num(req.params.id));
   if (!u) return res.status(404).end();
   const b = req.body ?? {};
   if (!b.name || !b.email) return res.status(400).json({ error: "name and email required" });
-  const r = db.prepare("INSERT INTO tenants (unit_id, name, email, monthly_prepayment_cents, move_in, move_out, portal_token, access_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(u.id, String(b.name).slice(0, 120), String(b.email).slice(0, 200), Math.round(numOr(b.monthly_prepayment_cents, 0)), isoOrNull(b.move_in), isoOrNull(b.move_out), randomBytes(16).toString("hex"), newAccessCode());
-  res.status(201).json(q.tenant(Number(r.lastInsertRowid)));
+  const t = await st(req).insert<Tenant>("tenants", {
+    unit_id: u.id, name: String(b.name).slice(0, 120), email: String(b.email).slice(0, 200),
+    monthly_prepayment_cents: Math.round(numOr(b.monthly_prepayment_cents, 0)), move_in: isoOrNull(b.move_in), move_out: isoOrNull(b.move_out),
+  });
+  res.status(201).json(shapeTenant(t));
 });
-app.patch("/api/tenants/:id", (req, res) => {
-  const t = q.tenant(num(req.params.id));
+app.patch("/api/tenants/:id", async (req, res) => {
+  const t = await st(req).tenant(num(req.params.id));
   if (!t) return res.status(404).end();
   const b = req.body ?? {};
-  db.prepare("UPDATE tenants SET name = ?, email = ?, monthly_prepayment_cents = ?, move_in = ?, move_out = ? WHERE id = ?")
-    .run(String(b.name ?? t.name).slice(0, 120), String(b.email ?? t.email).slice(0, 200), Math.round(numOr(b.monthly_prepayment_cents, t.monthly_prepayment_cents)),
-      "move_in" in b ? isoOrNull(b.move_in) : t.move_in, "move_out" in b ? isoOrNull(b.move_out) : t.move_out, t.id);
-  res.json(q.tenant(t.id));
+  const r = await st(req).update<Tenant>("tenants", t.id, {
+    name: String(b.name ?? t.name).slice(0, 120), email: String(b.email ?? t.email).slice(0, 200),
+    monthly_prepayment_cents: Math.round(numOr(b.monthly_prepayment_cents, t.monthly_prepayment_cents)),
+    move_in: "move_in" in b ? isoOrNull(b.move_in) : t.move_in, move_out: "move_out" in b ? isoOrNull(b.move_out) : t.move_out,
+  });
+  res.json(r && shapeTenant(r));
 });
-app.delete("/api/tenants/:id", (req, res) => { db.prepare("DELETE FROM tenants WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
-// New access code = the tenant registers again (password forgotten, phone lost). Old password stops working.
-app.post("/api/tenants/:id/reset-access", (req, res) => {
-  const t = q.tenant(num(req.params.id));
-  if (!t) return res.status(404).end();
-  db.prepare("UPDATE tenants SET access_code = ?, password_hash = NULL, registered_at = NULL WHERE id = ?").run(newAccessCode(), t.id);
-  res.json(q.tenant(t.id));
+app.delete("/api/tenants/:id", async (req, res) => { await st(req).remove("tenants", num(req.params.id)); res.status(204).end(); });
+// New registration code = the tenant registers again (password forgotten). Old password stops working.
+app.post("/api/tenants/:id/reset-access", async (req, res) => {
+  await st(req).resetTenantAccess(num(req.params.id));
+  const t = await st(req).tenant(num(req.params.id));
+  res.json(t && shapeTenant(t));
 });
 
 // ---------- lease: upload → AI proposal (not saved) → landlord confirms ----------
-async function leaseFromBuffer(buf: Buffer, originalName: string): Promise<{ extraction: LeaseExtraction; file_name: string }> {
-  const safeName = `${Date.now()}-lease-${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-  writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
+async function leaseFromBuffer(orgId: string, buf: Buffer, originalName: string): Promise<{ extraction: LeaseExtraction; file_name: string }> {
+  const file_name = saveFile(orgId, originalName, buf, "lease-");
   const { text } = await pdfParse(buf);
   try {
-    return { extraction: await extractLease({ text, fileName: originalName }), file_name: safeName };
+    return { extraction: await extractLease({ text, fileName: originalName }), file_name };
   } catch (e) {
     const expectedPath = path.resolve("samples", "leases", "expected.json");
     const expected: Record<string, Partial<LeaseExtraction>> = existsSync(expectedPath) ? JSON.parse(readFileSync(expectedPath, "utf8")) : {};
     const fb = expected[originalName];
     if (!fb) throw e;
-    return { extraction: { ...coerceLease(fb), notes: `[sample extraction — AI unavailable] ${fb.notes ?? ""}` }, file_name: safeName };
+    return { extraction: { ...coerceLease(fb), notes: `[sample extraction — AI unavailable] ${fb.notes ?? ""}` }, file_name };
   }
 }
 app.post("/api/tenants/:id/lease/extract", upload.single("file"), async (req, res) => {
-  if (!q.tenant(num(req.params.id))) return res.status(404).end();
+  if (!(await st(req).tenant(num(req.params.id)))) return res.status(404).end();
   if (!req.file) return res.status(400).json({ error: "file missing" });
   if (req.file.mimetype !== "application/pdf" && !req.file.originalname.toLowerCase().endsWith(".pdf")) return res.status(400).json({ error: "upload the lease as PDF" });
-  try { res.json(await leaseFromBuffer(req.file.buffer, req.file.originalname)); }
-  catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  res.json(await leaseFromBuffer(req.ctx.orgId, req.file.buffer, req.file.originalname));
 });
-// Demo helper: read the bundled sample lease for this tenant.
 app.post("/api/tenants/:id/lease/sample", async (req, res) => {
-  if (!q.tenant(num(req.params.id))) return res.status(404).end();
+  if (!(await st(req).tenant(num(req.params.id)))) return res.status(404).end();
   const f = path.resolve("samples", "leases", "mietvertrag-oeztuerk.pdf");
   if (!existsSync(f)) return res.status(404).json({ error: "sample lease missing" });
-  try { res.json(await leaseFromBuffer(readFileSync(f), "mietvertrag-oeztuerk.pdf")); }
-  catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  res.json(await leaseFromBuffer(req.ctx.orgId, readFileSync(f), "mietvertrag-oeztuerk.pdf"));
 });
-app.put("/api/tenants/:id/lease", (req, res) => {
-  const t = q.tenant(num(req.params.id));
+app.put("/api/tenants/:id/lease", async (req, res) => {
+  const t = await st(req).tenant(num(req.params.id));
   if (!t) return res.status(404).end();
   const b = req.body ?? {};
-  const cur = leaseOf(t);
-  const c = coerceLease(b);
-  const rules = { prepayment_type: c.prepayment_type, key_overrides: c.key_overrides, excluded_categories: c.excluded_categories, clauses: c.clauses,
-    source_file: typeof b.source_file === "string" ? b.source_file.slice(0, 200) : cur.source_file, confirmed: b.confirmed === true };
-  db.prepare("UPDATE tenants SET lease_json = ? WHERE id = ?").run(JSON.stringify(rules), t.id);
+  const cur = leaseOf(t), c = coerceLease(b);
+  // source_file must stay inside this organization's folder
+  const src = typeof b.source_file === "string" && b.source_file.startsWith(`${req.ctx.orgId}/`) ? b.source_file.slice(0, 200) : cur.source_file;
+  const rules = { prepayment_type: c.prepayment_type, key_overrides: c.key_overrides, excluded_categories: c.excluded_categories, clauses: c.clauses, source_file: src, confirmed: b.confirmed === true };
+  await st(req).update("tenants", t.id, { lease_json: rules });
   res.json(rules);
 });
-app.get("/api/tenants/:id/lease/file", (req, res) => {
-  const t = q.tenant(num(req.params.id));
+app.get("/api/tenants/:id/lease/file", async (req, res) => {
+  const t = await st(req).tenant(num(req.params.id));
   const f = t ? leaseOf(t).source_file : null;
   if (!f) return res.status(404).end();
-  res.sendFile(path.join(UPLOAD_DIR, f));
+  res.sendFile(filePath(f));
 });
+
+// ---------- payments received ----------
+app.get("/api/tenants/:id/payments", async (req, res) => res.json(await st(req).payments(num(req.params.id))));
+app.post("/api/tenants/:id/payments", async (req, res) => {
+  const t = await st(req).tenant(num(req.params.id));
+  if (!t) return res.status(404).end();
+  const b = req.body ?? {};
+  const on = isoOrNull(b.paid_on), cents = Math.round(Number(b.amount_cents));
+  if (!on || !Number.isFinite(cents)) return res.status(400).json({ error: "date and amount required" });
+  res.status(201).json(await st(req).insert<Payment>("payments", { tenant_id: t.id, paid_on: on, amount_cents: cents, note: b.note ? String(b.note).slice(0, 200) : null }));
+});
+// Book the contractual monthly amount for every month of the year the tenant lived there.
+app.post("/api/tenants/:id/payments/fill-year", async (req, res) => {
+  const t = await st(req).tenant(num(req.params.id));
+  if (!t) return res.status(404).end();
+  const year = num(req.body?.year);
+  const existing = (await st(req).payments(t.id)).filter((p) => p.paid_on.startsWith(String(year)));
+  if (existing.length) return res.status(409).json({ error: "payments for this year already exist" });
+  const rows: Record<string, unknown>[] = [];
+  for (let m = 1; m <= 12; m++) {
+    const d = `${year}-${String(m).padStart(2, "0")}-01`;
+    if (t.move_in && d < t.move_in.slice(0, 8) + "01") continue;
+    if (t.move_out && d > t.move_out) continue;
+    rows.push({ tenant_id: t.id, paid_on: d, amount_cents: t.monthly_prepayment_cents, note: "Vorauszahlung" });
+  }
+  await st(req).insertMany("payments", rows);
+  res.json({ inserted: rows.length, payments: await st(req).payments(t.id) });
+});
+app.delete("/api/payments/:id", async (req, res) => { await st(req).remove("payments", num(req.params.id)); res.status(204).end(); });
 
 // ---------- invoices ----------
-app.get("/api/properties/:id/invoices", (req, res) => {
-  const year = req.query.year ? num(req.query.year) : undefined;
-  res.json(q.invoices(num(req.params.id), year));
+app.get("/api/properties/:id/invoices", async (req, res) => {
+  res.json(await st(req).invoices(num(req.params.id), req.query.year ? num(req.query.year) : undefined));
 });
 
-function insertInvoice(propertyId: number, b: Record<string, unknown>) {
+function invoiceRow(propertyId: number, b: Record<string, unknown>) {
   const category = (CATEGORIES as readonly string[]).includes(String(b.category)) ? (b.category as Category) : "other";
   const keys: AllocationKey[] = ["area", "mea", "persons", "units", "heating", "water"];
   const key = keys.includes(b.allocation_key as AllocationKey) ? (b.allocation_key as AllocationKey) : DEFAULT_KEY[category];
   const pool = ["all", "residential", "commercial"].includes(b.pool as string) ? (b.pool as string) : "all";
   const amount = Math.round(Number(b.amount_cents));
-  if (!Number.isFinite(amount)) throw new Error("amount_cents invalid"); // negative = credit note
-  for (const d of [b.period_start, b.period_end]) if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) throw new Error("period invalid");
-  const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? 0)) || 0));
-  const unitId = b.unit_id ? num(b.unit_id) : null;
-  if (unitId && q.unit(unitId)?.property_id !== propertyId) throw new Error("unit does not belong to this building");
-  const r = db.prepare(
-    `INSERT INTO invoices (property_id, unit_id, provider, category, description, amount_cents, period_start, period_end, allocation_key, pool, allocable, non_allocable_cents, non_allocable_reason, co2_cents, energy_kwh, source, file_name, ai_confidence, ai_notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(propertyId, unitId, String(b.provider ?? "").slice(0, 120), category, String(b.description ?? "").slice(0, 200), amount,
-    String(b.period_start), String(b.period_end), key, pool, b.allocable === false ? 0 : 1, nonAlloc, b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null,
-    Math.max(0, Math.round(Number(b.co2_cents ?? 0)) || 0), Math.max(0, Number(b.energy_kwh ?? 0) || 0),
-    String(b.source ?? "manual"), b.file_name ? String(b.file_name) : null, b.ai_confidence == null ? null : Number(b.ai_confidence), b.ai_notes ? String(b.ai_notes) : null);
-  return q.invoice(Number(r.lastInsertRowid));
+  if (!Number.isFinite(amount)) throw new DbError("amount_cents invalid", 400); // negative = credit note
+  for (const d of [b.period_start, b.period_end]) if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) throw new DbError("period invalid", 400);
+  return {
+    property_id: propertyId, unit_id: b.unit_id ? num(b.unit_id) : null,
+    provider: String(b.provider ?? "").slice(0, 120), category, description: String(b.description ?? "").slice(0, 200), amount_cents: amount,
+    period_start: String(b.period_start), period_end: String(b.period_end), allocation_key: key, pool,
+    allocable: b.allocable === false ? 0 : 1,
+    non_allocable_cents: Math.min(Math.abs(amount), Math.max(0, Math.round(Number(b.non_allocable_cents ?? 0)) || 0)),
+    non_allocable_reason: b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null,
+    co2_cents: Math.max(0, Math.round(Number(b.co2_cents ?? 0)) || 0), energy_kwh: Math.max(0, Number(b.energy_kwh ?? 0) || 0),
+    source: String(b.source ?? "manual").slice(0, 20), file_name: b.file_name ? String(b.file_name) : null,
+    ai_confidence: b.ai_confidence == null ? null : Number(b.ai_confidence), ai_notes: b.ai_notes ? String(b.ai_notes).slice(0, 500) : null,
+  };
 }
-
-app.post("/api/properties/:id/invoices", (req, res) => {
-  try { res.status(201).json(insertInvoice(num(req.params.id), req.body ?? {})); }
-  catch (e) { res.status(400).json({ error: (e as Error).message }); }
+async function insertInvoice(req: Request, propertyId: number, b: Record<string, unknown>) {
+  const row = invoiceRow(propertyId, b);
+  // a client-supplied file name must point into this organization's folder
+  if (row.file_name && !row.file_name.startsWith(`${req.ctx.orgId}/`)) row.file_name = null;
+  if (row.unit_id && (await st(req).unit(row.unit_id))?.property_id !== propertyId) throw new DbError("unit does not belong to this building", 400);
+  return st(req).insert<Invoice>("invoices", row);
+}
+app.post("/api/properties/:id/invoices", async (req, res) => {
+  res.status(201).json(await insertInvoice(req, num(req.params.id), req.body ?? {}));
 });
-app.patch("/api/invoices/:id", (req, res) => {
-  const inv = q.invoice(num(req.params.id));
+app.patch("/api/invoices/:id", async (req, res) => {
+  const inv = await st(req).invoice(num(req.params.id));
   if (!inv) return res.status(404).end();
   const b = req.body ?? {};
-  const category = (CATEGORIES as readonly string[]).includes(b.category) ? b.category : inv.category;
-  const keys = ["area", "mea", "persons", "units", "heating", "water"];
-  const key = keys.includes(b.allocation_key) ? b.allocation_key : inv.allocation_key;
-  const pool = ["all", "residential", "commercial"].includes(b.pool) ? b.pool : inv.pool;
-  const amount = Math.round(Number(b.amount_cents ?? inv.amount_cents));
-  const nonAlloc = Math.min(amount, Math.max(0, Math.round(Number(b.non_allocable_cents ?? inv.non_allocable_cents)) || 0));
-  const unitId = "unit_id" in b ? (b.unit_id ? num(b.unit_id) : null) : inv.unit_id;
-  if (unitId && q.unit(unitId)?.property_id !== inv.property_id) return res.status(400).json({ error: "unit does not belong to this building" });
-  db.prepare(`UPDATE invoices SET unit_id=?, provider=?, category=?, description=?, amount_cents=?, period_start=?, period_end=?, allocation_key=?, pool=?, allocable=?, non_allocable_cents=?, non_allocable_reason=?, co2_cents=?, energy_kwh=? WHERE id=?`)
-    .run(unitId, String(b.provider ?? inv.provider).slice(0, 120), category, String(b.description ?? inv.description ?? "").slice(0, 200),
-      amount, String(b.period_start ?? inv.period_start), String(b.period_end ?? inv.period_end),
-      key, pool, b.allocable === undefined ? inv.allocable : (b.allocable ? 1 : 0), nonAlloc,
-      b.non_allocable_reason === undefined ? inv.non_allocable_reason : (b.non_allocable_reason ? String(b.non_allocable_reason).slice(0, 200) : null),
-      b.co2_cents === undefined ? inv.co2_cents : Math.max(0, Math.round(Number(b.co2_cents)) || 0),
-      b.energy_kwh === undefined ? inv.energy_kwh : Math.max(0, Number(b.energy_kwh) || 0), inv.id);
-  res.json(q.invoice(inv.id));
+  const merged = invoiceRow(inv.property_id, {
+    ...inv, ...b,
+    allocable: b.allocable === undefined ? !!inv.allocable : !!b.allocable,
+    unit_id: "unit_id" in b ? b.unit_id : inv.unit_id,
+  });
+  if (merged.unit_id && (await st(req).unit(merged.unit_id))?.property_id !== inv.property_id) return res.status(400).json({ error: "unit does not belong to this building" });
+  const { property_id: _p, source: _s, file_name: _f, ai_confidence: _c, ai_notes: _n, ...patch } = merged;
+  res.json(await st(req).update("invoices", inv.id, patch));
 });
-app.delete("/api/invoices/:id", (req, res) => {
-  db.prepare("DELETE FROM invoices WHERE id = ?").run(num(req.params.id));
-  res.status(204).end();
-});
-app.get("/api/invoices/:id/file", (req, res) => {
-  const inv = q.invoice(num(req.params.id));
+app.delete("/api/invoices/:id", async (req, res) => { await st(req).remove("invoices", num(req.params.id)); res.status(204).end(); });
+app.get("/api/invoices/:id/file", async (req, res) => {
+  const inv = await st(req).invoice(num(req.params.id));
   if (!inv?.file_name) return res.status(404).end();
-  res.sendFile(path.join(UPLOAD_DIR, inv.file_name));
+  res.sendFile(filePath(inv.file_name));
 });
 
 /** Text layer usable? Scans often have none, or OCR garbage. Below ~40 chars per page we hand the PDF itself to the model. */
-async function extractAllFromBuffer(buf: Buffer, originalName: string, mime: string): Promise<{ positions: Extraction[]; notes: string; file_name: string }> {
-  const safeName = `${Date.now()}-${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-  writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
+async function extractAllFromBuffer(orgId: string, buf: Buffer, originalName: string, mime: string): Promise<{ positions: Extraction[]; notes: string; file_name: string }> {
+  const file_name = saveFile(orgId, originalName, buf);
   let result;
   if (mime === "application/pdf" || originalName.toLowerCase().endsWith(".pdf")) {
     let text = "", pages = 1;
@@ -366,50 +417,41 @@ async function extractAllFromBuffer(buf: Buffer, originalName: string, mime: str
   } else if (mime.startsWith("image/")) {
     result = await extractInvoices({ imageBase64: buf.toString("base64"), mime, fileName: originalName });
   } else {
-    throw new Error("unsupported file type — upload a PDF or image");
+    throw new DbError("unsupported file type — upload a PDF or image", 400);
   }
-  return { ...result, file_name: safeName };
-}
-async function extractFromBuffer(buf: Buffer, originalName: string, mime: string) {
-  const r = await extractAllFromBuffer(buf, originalName, mime);
-  if (!r.positions.length) throw new Error("no cost position found in the document");
-  return { extraction: { ...r.positions[0], notes: [r.positions[0].notes, r.notes].filter(Boolean).join(" ") }, file_name: r.file_name };
+  return { ...result, file_name };
 }
 
-// Upload one file → AI extraction → ALL positions returned for review (not saved yet).
 app.post("/api/properties/:id/invoices/extract", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "file missing" });
-  try {
-    const r = await extractAllFromBuffer(req.file.buffer, req.file.originalname, req.file.mimetype);
-    if (!r.positions.length) return res.status(422).json({ error: "no cost position found in the document" });
-    res.json({ positions: r.positions, notes: r.notes, file_name: r.file_name, extraction: r.positions[0] });
-  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  if (!(await st(req).property(num(req.params.id)))) return res.status(404).end();
+  const r = await extractAllFromBuffer(req.ctx.orgId, req.file.buffer, req.file.originalname, req.file.mimetype);
+  if (!r.positions.length) return res.status(422).json({ error: "no cost position found in the document" });
+  res.json({ positions: r.positions, notes: r.notes, file_name: r.file_name, extraction: r.positions[0] });
 });
 
-// "Inbox sync": simulates the automated job that pulls provider invoices. Reads samples/ and books everything.
+// "Inbox sync" for the demo: reads samples/ and books everything into this building.
 app.post("/api/properties/:id/invoices/sync", async (req, res) => {
   const propertyId = num(req.params.id);
+  if (!(await st(req).property(propertyId))) return res.status(404).end();
   const dir = path.resolve("samples");
-  if (!existsSync(dir)) return res.json({ imported: [] });
-  const already = new Set(q.invoices(propertyId).map((i) => i.file_name?.replace(/^\d+-/, "")));
-  const imported = [];
+  if (!existsSync(dir)) return res.json({ imported: [], errors: [] });
+  const already = new Set((await st(req).invoices(propertyId)).map((i) => i.file_name?.split("/").pop()?.replace(/^\d+-/, "")));
+  const imported: Invoice[] = [];
   const errors: string[] = [];
-  // Safety net for the demo: if no AI key is configured (or the API fails), fall back to the stored
-  // extraction for the known sample files. Marked as source "sample" so nobody mistakes it for a live AI read.
   const expectedPath = path.join(dir, "expected.json");
   const expected: Record<string, Extraction | Extraction[]> = existsSync(expectedPath) ? JSON.parse(readFileSync(expectedPath, "utf8")) : {};
   let usedFallback = false;
   for (const f of readdirSync(dir).filter((f) => f.endsWith(".pdf") && !already.has(f))) {
     try {
-      const r = await extractAllFromBuffer(readFileSync(path.join(dir, f)), f, "application/pdf");
-      for (const p of r.positions) imported.push(insertInvoice(propertyId, { ...p, source: "sync", file_name: r.file_name, ai_confidence: p.confidence, ai_notes: [p.notes, p.meter_note].filter(Boolean).join(" ") }));
+      const r = await extractAllFromBuffer(req.ctx.orgId, readFileSync(path.join(dir, f)), f, "application/pdf");
+      for (const p of r.positions) imported.push(await insertInvoice(req, propertyId, { ...p, source: "sync", file_name: r.file_name, ai_confidence: p.confidence, ai_notes: [p.notes, p.meter_note].filter(Boolean).join(" ") }));
     } catch (e) {
       const fb = expected[f];
       if (!fb) { errors.push(`${f}: ${(e as Error).message}`); continue; }
       usedFallback = true;
-      const safeName = `${Date.now()}-${f}`;
-      writeFileSync(path.join(UPLOAD_DIR, safeName), readFileSync(path.join(dir, f)));
-      for (const p of Array.isArray(fb) ? fb : [fb]) imported.push(insertInvoice(propertyId, { ...p, source: "sample", file_name: safeName, ai_confidence: p.confidence, ai_notes: p.notes }));
+      const file_name = saveFile(req.ctx.orgId, f, readFileSync(path.join(dir, f)));
+      for (const p of Array.isArray(fb) ? fb : [fb]) imported.push(await insertInvoice(req, propertyId, { ...p, source: "sample", file_name, ai_confidence: p.confidence, ai_notes: p.notes }));
     }
   }
   if (usedFallback) errors.push("AI extraction unavailable (no OPENROUTER_API_KEY or API error) — used stored sample extractions instead.");
@@ -417,14 +459,13 @@ app.post("/api/properties/:id/invoices/sync", async (req, res) => {
 });
 
 // ---------- document archive ----------
-// One list for everything on file: free uploads, booked invoices with a PDF, scanned leases, generated statements.
-app.get("/api/properties/:id/documents", (req, res) => {
+app.get("/api/properties/:id/documents", async (req, res) => {
   const pid = num(req.params.id);
-  const tenants = q.tenants(pid);
-  const unitOf = new Map(q.units(pid).map((u) => [u.id, u.label]));
+  const [tenants, units, docs, invoices] = await Promise.all([st(req).tenants(pid), st(req).units(pid), st(req).documents(pid), st(req).invoices(pid)]);
+  const unitOf = new Map(units.map((u) => [u.id, u.label]));
   const rows: unknown[] = [];
-  for (const d of q.documents(pid)) rows.push({ ...d, source: "upload", url: `/api/documents/${d.id}/file`, tenant_name: d.tenant_id ? tenants.find((t) => t.id === d.tenant_id)?.name ?? null : null });
-  for (const inv of q.invoices(pid)) if (inv.file_name) rows.push({
+  for (const d of docs) rows.push({ ...d, source: "upload", url: `/api/documents/${d.id}/file`, tenant_name: d.tenant_id ? tenants.find((t) => t.id === d.tenant_id)?.name ?? null : null });
+  for (const inv of invoices) if (inv.file_name) rows.push({
     id: `inv-${inv.id}`, kind: "invoice", title: inv.description || `${inv.provider} ${inv.period_start.slice(0, 4)}`, provider: inv.provider, doc_date: inv.period_end,
     amount_cents: inv.amount_cents, tenant_id: null, tenant_name: null, invoice_id: inv.id, file_name: inv.file_name, mime: "application/pdf",
     size_bytes: fileSize(inv.file_name), notes: inv.category, created_at: inv.created_at, source: inv.source, url: `/api/invoices/${inv.id}/file`, booked: true,
@@ -433,25 +474,28 @@ app.get("/api/properties/:id/documents", (req, res) => {
     id: `lease-${t.id}`, kind: "contract", title: `Mietvertrag ${t.name}`, provider: t.name, doc_date: t.move_in, amount_cents: null, tenant_id: t.id, tenant_name: t.name,
     invoice_id: null, file_name: l.source_file, mime: "application/pdf", size_bytes: fileSize(l.source_file), notes: unitOf.get(t.unit_id) ?? null, created_at: t.move_in ?? "", source: "lease", url: `/api/tenants/${t.id}/lease/file`, lease_confirmed: l.confirmed,
   }); }
-  for (const t of tenants) for (const st of q.statementsForTenant(t.id)) rows.push({
-    id: `stmt-${st.id}`, kind: "statement", title: `Betriebskostenabrechnung ${st.year} – ${t.name}`, provider: "Billnest", doc_date: st.created_at.slice(0, 10), amount_cents: st.balance_cents,
-    tenant_id: t.id, tenant_name: t.name, invoice_id: null, file_name: null, mime: "application/pdf", size_bytes: null, notes: st.sent_at ? "sent" : "draft", created_at: st.created_at, source: "generated", url: `/api/statements/${st.id}/pdf`,
-  });
+  if (tenants.length) {
+    const { data } = await req.ctx.sb.from("statements").select("*").in("tenant_id", tenants.map((t) => t.id));
+    for (const s of (data ?? []) as Statement[]) {
+      const t = tenants.find((x) => x.id === s.tenant_id)!;
+      rows.push({
+        id: `stmt-${s.id}`, kind: "statement", title: `Betriebskostenabrechnung ${s.year} – ${t.name}`, provider: "Billnest", doc_date: s.created_at.slice(0, 10), amount_cents: s.balance_cents,
+        tenant_id: t.id, tenant_name: t.name, invoice_id: null, file_name: null, mime: "application/pdf", size_bytes: null, notes: s.sent_at ? "sent" : "draft", created_at: s.created_at, source: "generated", url: `/api/statements/${s.id}/pdf`,
+      });
+    }
+  }
   res.json(rows);
 });
-function fileSize(name: string): number | null { try { return statSync(path.join(UPLOAD_DIR, name)).size; } catch { return null; } }
 
-// Upload → optional AI classification (proposal only) → stored with the landlord's metadata.
 app.post("/api/properties/:id/documents", upload.single("file"), async (req, res) => {
   const pid = num(req.params.id);
-  if (!q.property(pid)) return res.status(404).end();
+  if (!(await st(req).property(pid))) return res.status(404).end();
   if (!req.file) return res.status(400).json({ error: "file missing" });
   const mime = req.file.mimetype;
   const isPdf = mime === "application/pdf" || req.file.originalname.toLowerCase().endsWith(".pdf");
   if (!isPdf && !mime.startsWith("image/")) return res.status(400).json({ error: "PDF or image only" });
-  const safeName = `${Date.now()}-doc-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-  writeFileSync(path.join(UPLOAD_DIR, safeName), req.file.buffer);
-  // AI proposal; if unavailable, fall back to the file name so the upload never fails.
+  const file_name = saveFile(req.ctx.orgId, req.file.originalname, req.file.buffer, "doc-");
+  // AI proposal; if unavailable, fall back to keywords / the file name so the upload never fails.
   let cls = { kind: "other" as DocKind, title: req.file.originalname.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").slice(0, 120), provider: "", doc_date: null as string | null, amount_cents: null as number | null, confidence: 0 };
   let text = "";
   try { if (isPdf) text = (await pdfParse(req.file.buffer)).text; } catch { /* scanned PDF without text layer */ }
@@ -459,186 +503,155 @@ app.post("/api/properties/:id/documents", upload.single("file"), async (req, res
     cls = isPdf ? await classifyDocument({ text, fileName: req.file.originalname }) : await classifyDocument({ imageBase64: req.file.buffer.toString("base64"), mime, fileName: req.file.originalname });
   } catch { if (text) cls = heuristicClassify(text, req.file.originalname); }
   const b = req.body ?? {};
-  const kind = (DOC_KINDS as readonly string[]).includes(b.kind) ? (b.kind as DocKind) : cls.kind;
-  const r = db.prepare("INSERT INTO documents (property_id, kind, title, provider, doc_date, amount_cents, tenant_id, file_name, mime, size_bytes, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(pid, kind, String(b.title || cls.title || req.file.originalname).slice(0, 120), String(b.provider || cls.provider || "").slice(0, 120) || null,
-      isoOrNull(b.doc_date) ?? cls.doc_date, b.amount_cents != null && b.amount_cents !== "" ? Math.round(Number(b.amount_cents)) : cls.amount_cents,
-      b.tenant_id ? num(b.tenant_id) : null, safeName, isPdf ? "application/pdf" : mime, req.file.size, b.notes ? String(b.notes).slice(0, 500) : null);
-  res.status(201).json({ ...q.document(Number(r.lastInsertRowid)), ai_confidence: cls.confidence });
+  const d = await st(req).insert<Document>("documents", {
+    property_id: pid, kind: (DOC_KINDS as readonly string[]).includes(b.kind) ? b.kind : cls.kind,
+    title: String(b.title || cls.title || req.file.originalname).slice(0, 120), provider: String(b.provider || cls.provider || "").slice(0, 120) || null,
+    doc_date: isoOrNull(b.doc_date) ?? cls.doc_date, amount_cents: b.amount_cents != null && b.amount_cents !== "" ? Math.round(Number(b.amount_cents)) : cls.amount_cents,
+    tenant_id: b.tenant_id ? num(b.tenant_id) : null, file_name, mime: isPdf ? "application/pdf" : mime, size_bytes: req.file.size, notes: b.notes ? String(b.notes).slice(0, 500) : null,
+  });
+  res.status(201).json({ ...d, ai_confidence: cls.confidence });
 });
-app.patch("/api/documents/:id", (req, res) => {
-  const d = q.document(num(req.params.id));
+app.patch("/api/documents/:id", async (req, res) => {
+  const d = await st(req).document(num(req.params.id));
   if (!d) return res.status(404).end();
   const b = req.body ?? {};
-  db.prepare("UPDATE documents SET kind = ?, title = ?, provider = ?, doc_date = ?, amount_cents = ?, tenant_id = ?, notes = ? WHERE id = ?")
-    .run((DOC_KINDS as readonly string[]).includes(b.kind) ? b.kind : d.kind, String(b.title ?? d.title).slice(0, 120), b.provider === undefined ? d.provider : (String(b.provider).slice(0, 120) || null),
-      "doc_date" in b ? isoOrNull(b.doc_date) : d.doc_date, "amount_cents" in b ? (b.amount_cents === null || b.amount_cents === "" ? null : Math.round(Number(b.amount_cents))) : d.amount_cents,
-      "tenant_id" in b ? (b.tenant_id ? num(b.tenant_id) : null) : d.tenant_id, "notes" in b ? (b.notes ? String(b.notes).slice(0, 500) : null) : d.notes, d.id);
-  res.json(q.document(d.id));
+  res.json(await st(req).update("documents", d.id, {
+    kind: (DOC_KINDS as readonly string[]).includes(b.kind) ? b.kind : d.kind, title: String(b.title ?? d.title).slice(0, 120),
+    provider: b.provider === undefined ? d.provider : (String(b.provider).slice(0, 120) || null),
+    doc_date: "doc_date" in b ? isoOrNull(b.doc_date) : d.doc_date,
+    amount_cents: "amount_cents" in b ? (b.amount_cents === null || b.amount_cents === "" ? null : Math.round(Number(b.amount_cents))) : d.amount_cents,
+    tenant_id: "tenant_id" in b ? (b.tenant_id ? num(b.tenant_id) : null) : d.tenant_id,
+    notes: "notes" in b ? (b.notes ? String(b.notes).slice(0, 500) : null) : d.notes,
+  }));
 });
-app.delete("/api/documents/:id", (req, res) => {
-  const d = q.document(num(req.params.id));
-  if (d) { db.prepare("DELETE FROM documents WHERE id = ?").run(d.id); try { unlinkSync(path.join(UPLOAD_DIR, d.file_name)); } catch { /* already gone */ } }
+app.delete("/api/documents/:id", async (req, res) => {
+  const d = await st(req).document(num(req.params.id));
+  if (d) { await st(req).remove("documents", d.id); try { unlinkSync(filePath(d.file_name)); } catch { /* already gone */ } }
   res.status(204).end();
 });
-app.get("/api/documents/:id/file", (req, res) => {
-  const d = q.document(num(req.params.id));
+app.get("/api/documents/:id/file", async (req, res) => {
+  const d = await st(req).document(num(req.params.id));
   if (!d) return res.status(404).end();
   res.setHeader("Content-Type", d.mime);
-  res.sendFile(path.join(UPLOAD_DIR, d.file_name));
+  res.sendFile(filePath(d.file_name));
 });
-// Book an archived invoice: run the invoice extraction on the stored file and hand it to the review form (not saved yet).
 app.post("/api/documents/:id/extract-invoice", async (req, res) => {
-  const d = q.document(num(req.params.id));
+  const d = await st(req).document(num(req.params.id));
   if (!d) return res.status(404).end();
-  try {
-    const buf = readFileSync(path.join(UPLOAD_DIR, d.file_name));
-    const r = await extractFromBuffer(buf, d.title + (d.mime === "application/pdf" ? ".pdf" : ""), d.mime);
-    res.json({ ...r, document_id: d.id });
-  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  const r = await extractAllFromBuffer(req.ctx.orgId, readFileSync(filePath(d.file_name)), d.title + (d.mime === "application/pdf" ? ".pdf" : ""), d.mime);
+  if (!r.positions.length) return res.status(422).json({ error: "no cost position found in the document" });
+  res.json({ extraction: { ...r.positions[0], notes: [r.positions[0].notes, r.notes].filter(Boolean).join(" ") }, file_name: r.file_name, document_id: d.id });
 });
-app.post("/api/documents/:id/link-invoice", (req, res) => {
-  const d = q.document(num(req.params.id));
+app.post("/api/documents/:id/link-invoice", async (req, res) => {
+  const d = await st(req).document(num(req.params.id));
   if (!d) return res.status(404).end();
-  db.prepare("UPDATE documents SET invoice_id = ? WHERE id = ?").run(num(req.body?.invoice_id), d.id);
-  res.json(q.document(d.id));
+  res.json(await st(req).update("documents", d.id, { invoice_id: num(req.body?.invoice_id) }));
 });
-
-// ---------- live preview: what each unit would carry this year (no statements written) ----------
-app.get("/api/properties/:id/preview", (req, res) => {
-  const pid = num(req.params.id), year = num(req.query.year);
-  const property = q.property(pid);
-  if (!property) return res.status(404).end();
-  const { statements, summary } = computeStatements(q.units(pid), q.tenants(pid), q.invoices(pid, year), year, settingsOf(property), new Date(), q.paymentsForProperty(pid));
-  const units = q.units(pid).map((u) => {
-    const own = statements.filter((s) => s.unit.id === u.id);
-    return { unit_id: u.id, tenants_cents: own.reduce((a, s) => a + s.total_cents, 0), prepaid_cents: own.reduce((a, s) => a + s.prepaid_cents, 0), balance_cents: own.reduce((a, s) => a + s.balance_cents, 0) };
-  });
-  res.json({ year, summary, units });
-});
-
-// ---------- prepayments actually received ----------
-app.get("/api/tenants/:id/payments", (req, res) => res.json(q.payments(num(req.params.id))));
-app.post("/api/tenants/:id/payments", (req, res) => {
-  const t = q.tenant(num(req.params.id));
-  if (!t) return res.status(404).end();
-  const b = req.body ?? {};
-  const on = isoOrNull(b.paid_on);
-  const cents = Math.round(Number(b.amount_cents));
-  if (!on || !Number.isFinite(cents)) return res.status(400).json({ error: "date and amount required" });
-  const r = db.prepare("INSERT INTO payments (tenant_id, paid_on, amount_cents, note) VALUES (?, ?, ?, ?)").run(t.id, on, cents, b.note ? String(b.note).slice(0, 200) : null);
-  res.status(201).json(db.prepare("SELECT * FROM payments WHERE id = ?").get(Number(r.lastInsertRowid)));
-});
-// Convenience: book the contractual monthly amount for every month of the year the tenant lived there.
-app.post("/api/tenants/:id/payments/fill-year", (req, res) => {
-  const t = q.tenant(num(req.params.id));
-  if (!t) return res.status(404).end();
-  const year = num(req.body?.year);
-  const existing = q.payments(t.id).filter((p) => p.paid_on.startsWith(String(year)));
-  if (existing.length) return res.status(409).json({ error: "payments for this year already exist" });
-  const ins = db.prepare("INSERT INTO payments (tenant_id, paid_on, amount_cents, note) VALUES (?, ?, ?, ?)");
-  let n = 0;
-  for (let m = 1; m <= 12; m++) {
-    const d = `${year}-${String(m).padStart(2, "0")}-01`;
-    if (t.move_in && d < t.move_in.slice(0, 8) + "01") continue;
-    if (t.move_out && d > t.move_out) continue;
-    ins.run(t.id, d, t.monthly_prepayment_cents, "Vorauszahlung"); n++;
-  }
-  res.json({ inserted: n, payments: q.payments(t.id) });
-});
-app.delete("/api/payments/:id", (req, res) => { db.prepare("DELETE FROM payments WHERE id = ?").run(num(req.params.id)); res.status(204).end(); });
 
 // ---------- statements ----------
-const withLines = (s: ReturnType<typeof q.statements>[number]) => ({ ...s, lines: JSON.parse(s.lines_json), lines_json: undefined });
-const runPayload = (propertyId: number, year: number) => {
-  const run = q.run(propertyId, year);
-  return {
-    statements: q.statements(propertyId, year).map(withLines),
-    summary: run ? JSON.parse(run.summary_json) : null,
-    checks: run ? JSON.parse(run.checks_json) : [],
-    created_at: run?.created_at ?? null,
-  };
-};
-
-app.post("/api/properties/:id/statements/generate", (req, res) => {
-  const propertyId = num(req.params.id);
-  const year = num(req.body?.year);
-  if (!Number.isFinite(year)) return res.status(400).json({ error: "year missing" });
-  const property = q.property(propertyId);
-  if (!property) return res.status(404).end();
-  const { statements, summary, checks } = computeStatements(q.units(propertyId), q.tenants(propertyId), q.invoices(propertyId, year), year, settingsOf(property), new Date(), q.paymentsForProperty(propertyId));
-  const up = db.prepare(
-    `INSERT INTO statements (tenant_id, year, total_cents, prepaid_cents, balance_cents, suggested_prepayment_cents, lines_json) VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(tenant_id, year) DO UPDATE SET total_cents=excluded.total_cents, prepaid_cents=excluded.prepaid_cents,
-       balance_cents=excluded.balance_cents, suggested_prepayment_cents=excluded.suggested_prepayment_cents, lines_json=excluded.lines_json, created_at=datetime('now'), sent_at=NULL`
-  );
-  for (const s of statements) up.run(s.tenant.id, year, s.total_cents, s.prepaid_cents, s.balance_cents, s.suggested_prepayment_cents, JSON.stringify(s.lines));
-  db.prepare(`INSERT INTO runs (property_id, year, summary_json, checks_json) VALUES (?, ?, ?, ?)
-    ON CONFLICT(property_id, year) DO UPDATE SET summary_json=excluded.summary_json, checks_json=excluded.checks_json, created_at=datetime('now')`)
-    .run(propertyId, year, JSON.stringify(summary), JSON.stringify(checks));
-  res.json(runPayload(propertyId, year));
-});
-app.get("/api/properties/:id/statements", (req, res) => {
-  res.json(runPayload(num(req.params.id), num(req.query.year)));
-});
-
-function buildTenantStatement(sid: number) {
-  const s = q.statement(sid);
-  if (!s) return null;
-  const tenant = q.tenant(s.tenant_id)!, unit = q.unit(tenant.unit_id)!, property = q.property(unit.property_id)!;
-  const payments = q.payments(tenant.id).filter((p) => p.paid_on.startsWith(String(s.year)));
-  return { s, property, ts: { tenant, unit, year: s.year, lines: JSON.parse(s.lines_json), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), prepaid_from_payments: payments.length > 0, payments, balance_cents: s.balance_cents, suggested_prepayment_cents: s.suggested_prepayment_cents } };
+async function compute(req: Request, propertyId: number, year: number) {
+  const s = st(req);
+  const property = await s.property(propertyId);
+  if (!property) return null;
+  const [units, tenants, invoices, payments] = await Promise.all([s.units(propertyId), s.tenants(propertyId), s.invoices(propertyId, year), s.paymentsForProperty(propertyId)]);
+  return { property, units, ...computeStatements(units, tenants, invoices, year, settingsOf(property), new Date(), payments) };
 }
 
-// Manual payment tracking: the landlord records that the tenant paid or that the refund was transferred.
-app.patch("/api/statements/:id/payment", (req, res) => {
-  const st = q.statement(num(req.params.id));
-  if (!st) return res.status(404).end();
+app.get("/api/properties/:id/preview", async (req, res) => {
+  const year = num(req.query.year);
+  const r = await compute(req, num(req.params.id), year);
+  if (!r) return res.status(404).end();
+  res.json({ year, summary: r.summary, units: r.units.map((u) => {
+    const own = r.statements.filter((s) => s.unit.id === u.id);
+    return { unit_id: u.id, tenants_cents: own.reduce((a, s) => a + s.total_cents, 0), prepaid_cents: own.reduce((a, s) => a + s.prepaid_cents, 0), balance_cents: own.reduce((a, s) => a + s.balance_cents, 0) };
+  }) });
+});
+
+const withLines = (s: Statement) => ({ ...s, lines: parseJson<StatementLine[]>(s.lines_json, []), lines_json: undefined });
+async function runPayload(req: Request, propertyId: number, year: number) {
+  const [run, statements] = await Promise.all([st(req).run(propertyId, year), st(req).statements(propertyId, year)]);
+  return {
+    statements: statements.map(withLines),
+    summary: run ? parseJson(run.summary_json, null) : null,
+    checks: run ? parseJson(run.checks_json, []) : [],
+    created_at: run?.created_at ?? null,
+  };
+}
+
+app.post("/api/properties/:id/statements/generate", async (req, res) => {
+  const propertyId = num(req.params.id), year = num(req.body?.year);
+  if (!Number.isFinite(year)) return res.status(400).json({ error: "year missing" });
+  const r = await compute(req, propertyId, year);
+  if (!r) return res.status(404).end();
+  const now = new Date().toISOString();
+  await st(req).upsert("statements", r.statements.map((s) => ({
+    tenant_id: s.tenant.id, year, total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, balance_cents: s.balance_cents,
+    suggested_prepayment_cents: s.suggested_prepayment_cents, lines_json: s.lines, created_at: now, sent_at: null,
+  })), "tenant_id,year");
+  await st(req).upsert("runs", [{ property_id: propertyId, year, summary_json: r.summary, checks_json: r.checks, created_at: now }], "property_id,year");
+  res.json(await runPayload(req, propertyId, year));
+});
+app.get("/api/properties/:id/statements", async (req, res) => {
+  res.json(await runPayload(req, num(req.params.id), num(req.query.year)));
+});
+
+async function buildTenantStatement(req: Request, sid: number) {
+  const s = await st(req).statement(sid);
+  if (!s) return null;
+  const tenant = (await st(req).tenant(s.tenant_id))!, unit = (await st(req).unit(tenant.unit_id))!, property = (await st(req).property(unit.property_id))!;
+  const payments = (await st(req).payments(tenant.id)).filter((p) => p.paid_on.startsWith(String(s.year)));
+  return { s, property, ts: { tenant, unit, year: s.year, lines: parseJson<StatementLine[]>(s.lines_json, []), total_cents: s.total_cents, prepaid_cents: s.prepaid_cents, months_occupied: occupiedMonths(tenant, s.year), prepaid_from_payments: payments.length > 0, payments, balance_cents: s.balance_cents, suggested_prepayment_cents: s.suggested_prepayment_cents } };
+}
+
+app.patch("/api/statements/:id/payment", async (req, res) => {
+  const s = await st(req).statement(num(req.params.id));
+  if (!s) return res.status(404).end();
   const b = req.body ?? {};
-  const status = ["open", "paid", "refunded", "waived"].includes(b.status) ? b.status : st.payment_status;
-  const paidAt = status === "open" ? null : (isoOrNull(b.paid_at) ?? st.paid_at ?? new Date().toISOString().slice(0, 10));
-  const paidCents = status === "open" ? null : (b.paid_cents === undefined || b.paid_cents === "" ? (st.paid_cents ?? Math.abs(st.balance_cents)) : Math.round(Number(b.paid_cents)));
-  db.prepare("UPDATE statements SET payment_status = ?, paid_at = ?, paid_cents = ?, payment_note = ? WHERE id = ?")
-    .run(status, paidAt, paidCents, "note" in b ? (b.note ? String(b.note).slice(0, 300) : null) : st.payment_note, st.id);
-  res.json(withLines(q.statement(st.id)!));
+  const status = ["open", "paid", "refunded", "waived"].includes(b.status) ? b.status : s.payment_status;
+  const updated = await st(req).update<Statement>("statements", s.id, {
+    payment_status: status,
+    paid_at: status === "open" ? null : (isoOrNull(b.paid_at) ?? s.paid_at ?? new Date().toISOString().slice(0, 10)),
+    paid_cents: status === "open" ? null : (b.paid_cents === undefined || b.paid_cents === "" ? (s.paid_cents ?? Math.abs(s.balance_cents)) : Math.round(Number(b.paid_cents))),
+    payment_note: "note" in b ? (b.note ? String(b.note).slice(0, 300) : null) : s.payment_note,
+  });
+  res.json(updated && withLines(updated));
 });
 
 app.get("/api/statements/:id/pdf", async (req, res) => {
-  const b = buildTenantStatement(num(req.params.id));
+  const b = await buildTenantStatement(req, num(req.params.id));
   if (!b) return res.status(404).end();
-  const pdf = await statementPdf(b.property, b.ts, `${APP_URL()}/portal/${b.ts.tenant.portal_token}`);
+  const pdf = await statementPdf(b.property, b.ts, `${APP_URL()}/portal/${b.ts.tenant.portal_token}`, (await st(req).organization()) ?? {});
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `inline; filename="Abrechnung-${b.s.year}-${b.ts.unit.label.replace(/\W+/g, "_")}.pdf"`);
   res.send(pdf);
 });
 
 app.post("/api/statements/:id/send", async (req, res) => {
-  const b = buildTenantStatement(num(req.params.id));
+  const b = await buildTenantStatement(req, num(req.params.id));
   if (!b) return res.status(404).end();
   // A statement with unresolved blockers must not go out.
-  const run = q.run(b.property.id, b.s.year);
-  const blockers = run ? (JSON.parse(run.checks_json) as { level: string; message: string }[]).filter((c) => c.level === "BLOCKER") : [];
+  const run = await st(req).run(b.property.id, b.s.year);
+  const blockers = run ? parseJson<{ level: string; message: string }[]>(run.checks_json, []).filter((c) => c.level === "BLOCKER") : [];
   if (blockers.length) return res.status(409).json({ error: `Blocked: ${blockers.map((c) => c.message).join(" ")}` });
   const portalUrl = `${APP_URL()}/portal/${b.ts.tenant.portal_token}`;
-  try {
-    const pdf = await statementPdf(b.property, b.ts, portalUrl);
-    const bal = b.ts.balance_cents;
-    await sendMail({
-      to: { email: b.ts.tenant.email, name: b.ts.tenant.name },
-      subject: `Betriebskostenabrechnung ${b.s.year} – ${b.property.name}, ${b.ts.unit.label}`,
-      html: `<p>Guten Tag ${b.ts.tenant.name},</p>
+  const org = (await st(req).organization()) ?? {};
+  const pdf = await statementPdf(b.property, b.ts, portalUrl, org);
+  const bal = b.ts.balance_cents;
+  await sendMail({
+    to: { email: b.ts.tenant.email, name: b.ts.tenant.name },
+    subject: `Betriebskostenabrechnung ${b.s.year} – ${b.property.name}, ${b.ts.unit.label}`,
+    html: `<p>Guten Tag ${b.ts.tenant.name},</p>
 <p>anbei erhalten Sie Ihre Betriebskostenabrechnung für ${b.s.year}.</p>
 <p><strong>${bal > 0 ? `Nachzahlung: ${eur(bal)}` : `Guthaben: ${eur(-bal)}`}</strong></p>
 <p>Jede Position können Sie mit Originalbeleg im Mieterportal nachvollziehen:<br><a href="${portalUrl}">${portalUrl}</a><br>
 ${b.ts.tenant.registered_at
   ? `Oder melden Sie sich unter <a href="${APP_URL()}/login">${APP_URL()}/login</a> mit Ihrer E-Mail und Ihrem Passwort an.</p>`
   : `Oder registrieren Sie sich einmalig unter <a href="${APP_URL()}/login">${APP_URL()}/login</a> — E-Mail: ${b.ts.tenant.email}, Registrierungscode: <strong>${b.ts.tenant.access_code}</strong>. Danach melden Sie sich mit Ihrem Passwort an.</p>`}
-<p>Mit freundlichen Grüßen<br>Ihre Hausverwaltung</p>`,
-      attachment: { name: `Betriebskostenabrechnung-${b.s.year}.pdf`, content: pdf },
-    });
-    db.prepare("UPDATE statements SET sent_at = datetime('now') WHERE id = ?").run(b.s.id);
-    res.json({ ok: true, sent_at: q.statement(b.s.id)!.sent_at });
-  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+<p>Mit freundlichen Grüßen<br>${String((org as { landlord_name?: string }).landlord_name || (org as { name?: string }).name || "Ihre Hausverwaltung")}</p>`,
+    attachment: { name: `Betriebskostenabrechnung-${b.s.year}.pdf`, content: pdf },
+  });
+  const u = await st(req).update<Statement>("statements", b.s.id, { sent_at: new Date().toISOString() });
+  res.json({ ok: true, sent_at: u?.sent_at ?? null });
 });
 
 // ---------- static frontend (production) ----------
@@ -647,6 +660,13 @@ if (existsSync(dist)) {
   app.use(express.static(dist));
   app.get("/{*path}", (_req, res) => res.sendFile(path.join(dist, "index.html")));
 }
+
+// ---------- errors ----------
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const status = err instanceof DbError ? err.status : 500;
+  if (status >= 500) console.error(err);
+  res.status(status).json({ error: status >= 500 ? "internal error" : (err as Error).message });
+});
 
 const port = Number(process.env.API_PORT ?? process.env.PORT ?? 3000);
 app.listen(port, () => console.log(`api listening on :${port}`));

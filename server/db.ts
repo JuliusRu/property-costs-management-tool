@@ -1,13 +1,13 @@
-import { DatabaseSync } from "node:sqlite";
-import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import path from "node:path";
+// Domain types and constants shared by the engine, the store and the API.
+// Data lives in Supabase (Postgres + RLS) — see supabase/migrations and server/store.ts.
 
-const DATA_DIR = process.env.DATA_DIR ?? path.resolve("data");
-mkdirSync(DATA_DIR, { recursive: true });
-
-export const db = new DatabaseSync(path.join(DATA_DIR, "app.db"));
-db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+/** jsonb columns arrive as objects from Postgres; tests and old data may still pass JSON strings. */
+export type Json = string | Record<string, unknown> | unknown[] | null;
+export function parseJson<T>(v: unknown, fallback: T): T {
+  if (v == null || v === "") return fallback;
+  if (typeof v === "string") { try { return JSON.parse(v) as T; } catch { return fallback; } }
+  return v as T;
+}
 
 // Allocation keys according to German BetrKV practice.
 export type AllocationKey = "area" | "mea" | "persons" | "units" | "heating" | "water";
@@ -73,160 +73,17 @@ export type PropertySettings = {
 };
 export const DEFAULT_SETTINGS: PropertySettings = { heating_type: "gas", consumption_share: 0.7, hot_water_central: true, heizkv_exempt: false, heated_area_sqm: null };
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS properties (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  address TEXT NOT NULL,
-  country TEXT NOT NULL DEFAULT 'DE',
-  settings_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE TABLE IF NOT EXISTS units (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
-  label TEXT NOT NULL,
-  unit_type TEXT NOT NULL DEFAULT 'residential',
-  area_sqm REAL NOT NULL,
-  mea REAL NOT NULL DEFAULT 0,
-  persons INTEGER NOT NULL DEFAULT 1,
-  heating_kwh REAL NOT NULL DEFAULT 0,
-  water_m3 REAL NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS tenants (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  unit_id INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  monthly_prepayment_cents INTEGER NOT NULL DEFAULT 0,
-  move_in TEXT,
-  move_out TEXT,
-  portal_token TEXT NOT NULL UNIQUE,
-  lease_json TEXT NOT NULL DEFAULT '{}',
-  password_hash TEXT,
-  registered_at TEXT
-);
-CREATE TABLE IF NOT EXISTS payments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  paid_on TEXT NOT NULL,
-  amount_cents INTEGER NOT NULL,
-  note TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS invoices (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
-  unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL,
-  provider TEXT NOT NULL,
-  category TEXT NOT NULL,
-  description TEXT,
-  amount_cents INTEGER NOT NULL,
-  period_start TEXT NOT NULL,
-  period_end TEXT NOT NULL,
-  allocation_key TEXT NOT NULL,
-  pool TEXT NOT NULL DEFAULT 'all',
-  allocable INTEGER NOT NULL DEFAULT 1,
-  non_allocable_cents INTEGER NOT NULL DEFAULT 0,
-  non_allocable_reason TEXT,
-  co2_cents INTEGER NOT NULL DEFAULT 0,
-  energy_kwh REAL NOT NULL DEFAULT 0,
-  source TEXT NOT NULL DEFAULT 'manual',
-  file_name TEXT,
-  ai_confidence REAL,
-  ai_notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS runs (
-  property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
-  year INTEGER NOT NULL,
-  summary_json TEXT NOT NULL,
-  checks_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (property_id, year)
-);
-CREATE TABLE IF NOT EXISTS documents (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL DEFAULT 'other',
-  title TEXT NOT NULL,
-  provider TEXT,
-  doc_date TEXT,
-  amount_cents INTEGER,
-  tenant_id INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
-  invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,
-  file_name TEXT NOT NULL,
-  mime TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS waitlist (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT NOT NULL UNIQUE,
-  units INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS statements (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  year INTEGER NOT NULL,
-  total_cents INTEGER NOT NULL,
-  prepaid_cents INTEGER NOT NULL,
-  balance_cents INTEGER NOT NULL,
-  suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0,
-  payment_status TEXT NOT NULL DEFAULT 'open',
-  paid_at TEXT,
-  paid_cents INTEGER,
-  payment_note TEXT,
-  lines_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  sent_at TEXT,
-  UNIQUE(tenant_id, year)
-);
-`);
 
-// tiny forward-only migrations for databases created before a column existed
-for (const stmt of ["ALTER TABLE tenants ADD COLUMN move_in TEXT", "ALTER TABLE tenants ADD COLUMN move_out TEXT",
-  "ALTER TABLE invoices ADD COLUMN non_allocable_cents INTEGER NOT NULL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN non_allocable_reason TEXT",
-  "ALTER TABLE tenants ADD COLUMN access_code TEXT",
-  "ALTER TABLE properties ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'",
-  "ALTER TABLE units ADD COLUMN unit_type TEXT NOT NULL DEFAULT 'residential'",
-  "ALTER TABLE invoices ADD COLUMN co2_cents INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE invoices ADD COLUMN energy_kwh REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE statements ADD COLUMN suggested_prepayment_cents INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE tenants ADD COLUMN lease_json TEXT NOT NULL DEFAULT '{}'",
-  "ALTER TABLE tenants ADD COLUMN password_hash TEXT",
-  "ALTER TABLE tenants ADD COLUMN registered_at TEXT",
-  "ALTER TABLE invoices ADD COLUMN unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL",
-  "ALTER TABLE statements ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'open'",
-  "ALTER TABLE statements ADD COLUMN paid_at TEXT",
-  "ALTER TABLE statements ADD COLUMN paid_cents INTEGER",
-  "ALTER TABLE statements ADD COLUMN payment_note TEXT",
-  "ALTER TABLE units ADD COLUMN mea REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE invoices ADD COLUMN pool TEXT NOT NULL DEFAULT 'all'"]) {
-  try { db.exec(stmt); } catch { /* column exists */ }
-}
-
-// Tenant access codes: short, human-typeable, no ambiguous characters (0/O, 1/I/L).
-const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-export function newAccessCode(): string {
-  const bytes = randomBytes(8);
-  return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
-}
-for (const row of db.prepare("SELECT id FROM tenants WHERE access_code IS NULL").all() as { id: number }[]) {
-  db.prepare("UPDATE tenants SET access_code = ? WHERE id = ?").run(newAccessCode(), row.id);
-}
-
-export type Property = { id: number; name: string; address: string; country: string; settings_json: string };
+export type Property = { id: number; org_id?: string; name: string; address: string; country: string; settings_json: Json };
 export type UnitType = "residential" | "commercial" | "garage";
 export type Unit = {
-  id: number; property_id: number; label: string; unit_type: UnitType; area_sqm: number; mea: number;
+  id: number; org_id?: string; property_id: number; label: string; unit_type: UnitType; area_sqm: number; mea: number;
   persons: number; heating_kwh: number; water_m3: number;
 };
 export type Tenant = {
-  id: number; unit_id: number; name: string; email: string;
+  id: number; org_id?: string; unit_id: number; name: string; email: string;
   monthly_prepayment_cents: number; move_in: string | null; move_out: string | null; portal_token: string; access_code: string;
-  lease_json: string; password_hash: string | null; registered_at: string | null;
+  lease_json: Json; password_hash?: string | null; registered_at: string | null;
 };
 
 // Rules read from (or typed in from) the lease. They rank above the building default — a lease-agreed key binds the landlord.
@@ -240,11 +97,11 @@ export type LeaseRules = {
   confirmed: boolean;
 };
 export const DEFAULT_LEASE: LeaseRules = { prepayment_type: "vorauszahlung", key_overrides: {}, excluded_categories: [], clauses: [], source_file: null, confirmed: false };
-export function leaseOf(t: Tenant): LeaseRules {
-  try { return { ...DEFAULT_LEASE, ...JSON.parse(t.lease_json || "{}") }; } catch { return { ...DEFAULT_LEASE }; }
+export function leaseOf(t: Pick<Tenant, "lease_json">): LeaseRules {
+  return { ...DEFAULT_LEASE, ...parseJson<Partial<LeaseRules>>(t.lease_json, {}) };
 }
 export type Invoice = {
-  id: number; property_id: number; unit_id: number | null; provider: string; category: Category;
+  id: number; org_id?: string; property_id: number; unit_id: number | null; provider: string; category: Category;
   description: string | null; amount_cents: number; period_start: string;
   period_end: string; allocation_key: AllocationKey; pool: Pool; allocable: number;
   non_allocable_cents: number; non_allocable_reason: string | null;
@@ -253,50 +110,23 @@ export type Invoice = {
   ai_notes: string | null; created_at: string;
 };
 export type Statement = {
-  id: number; tenant_id: number; year: number; total_cents: number;
+  id: number; org_id?: string; tenant_id: number; year: number; total_cents: number;
   prepaid_cents: number; balance_cents: number; suggested_prepayment_cents: number;
-  payment_status: "open" | "paid" | "refunded" | "waived"; paid_at: string | null; paid_cents: number | null; payment_note: string | null; lines_json: string;
+  payment_status: "open" | "paid" | "refunded" | "waived"; paid_at: string | null; paid_cents: number | null; payment_note: string | null; lines_json: Json;
   created_at: string; sent_at: string | null;
 };
 
-export function settingsOf(p: Property): PropertySettings {
-  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(p.settings_json || "{}") }; } catch { return { ...DEFAULT_SETTINGS }; }
+export function settingsOf(p: Pick<Property, "settings_json">): PropertySettings {
+  return { ...DEFAULT_SETTINGS, ...parseJson<Partial<PropertySettings>>(p.settings_json, {}) };
 }
 
 export const DOC_KINDS = ["invoice", "contract", "notice", "insurance", "meter", "correspondence", "other"] as const;
 export type DocKind = (typeof DOC_KINDS)[number];
 export type Document = {
-  id: number; property_id: number; kind: DocKind; title: string; provider: string | null; doc_date: string | null;
+  id: number; org_id?: string; property_id: number; kind: DocKind; title: string; provider: string | null; doc_date: string | null;
   amount_cents: number | null; tenant_id: number | null; invoice_id: number | null; file_name: string; mime: string;
   size_bytes: number; notes: string | null; created_at: string;
 };
 
-export type Payment = { id: number; tenant_id: number; paid_on: string; amount_cents: number; note: string | null; created_at: string };
-
-export const q = {
-  payments: (tenantId: number) => db.prepare("SELECT * FROM payments WHERE tenant_id = ? ORDER BY paid_on, id").all(tenantId) as unknown as Payment[],
-  paymentsForProperty: (propertyId: number) => db.prepare("SELECT p.* FROM payments p JOIN tenants t ON t.id = p.tenant_id JOIN units u ON u.id = t.unit_id WHERE u.property_id = ? ORDER BY p.paid_on, p.id").all(propertyId) as unknown as Payment[],
-  documents: (propertyId: number) => db.prepare("SELECT * FROM documents WHERE property_id = ? ORDER BY COALESCE(doc_date, created_at) DESC, id DESC").all(propertyId) as unknown as Document[],
-  document: (id: number) => db.prepare("SELECT * FROM documents WHERE id = ?").get(id) as unknown as Document | undefined,
-  properties: () => db.prepare("SELECT * FROM properties ORDER BY id").all() as unknown as Property[],
-  property: (id: number) => db.prepare("SELECT * FROM properties WHERE id = ?").get(id) as unknown as Property | undefined,
-  units: (propertyId: number) => db.prepare("SELECT * FROM units WHERE property_id = ? ORDER BY id").all(propertyId) as unknown as Unit[],
-  unit: (id: number) => db.prepare("SELECT * FROM units WHERE id = ?").get(id) as unknown as Unit | undefined,
-  allTenants: () => db.prepare("SELECT t.*, u.label AS unit_label, u.property_id, p.name AS property_name FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id ORDER BY p.name, u.id, t.move_in").all() as unknown as (Tenant & { unit_label: string; property_id: number; property_name: string })[],
-  tenants: (propertyId: number) =>
-    db.prepare("SELECT t.* FROM tenants t JOIN units u ON u.id = t.unit_id WHERE u.property_id = ? ORDER BY t.id").all(propertyId) as unknown as Tenant[],
-  tenant: (id: number) => db.prepare("SELECT * FROM tenants WHERE id = ?").get(id) as unknown as Tenant | undefined,
-  tenantByEmail: (email: string) => db.prepare("SELECT * FROM tenants WHERE lower(email) = lower(?)").all(email) as unknown as Tenant[],
-  tenantByToken: (token: string) => db.prepare("SELECT * FROM tenants WHERE portal_token = ?").get(token) as unknown as Tenant | undefined,
-  invoices: (propertyId: number, year?: number) =>
-    (year
-      ? db.prepare("SELECT * FROM invoices WHERE property_id = ? AND substr(period_start,1,4) = ? ORDER BY period_start, id").all(propertyId, String(year))
-      : db.prepare("SELECT * FROM invoices WHERE property_id = ? ORDER BY period_start DESC, id DESC").all(propertyId)) as unknown as Invoice[],
-  invoice: (id: number) => db.prepare("SELECT * FROM invoices WHERE id = ?").get(id) as unknown as Invoice | undefined,
-  statements: (propertyId: number, year: number) =>
-    db.prepare("SELECT s.* FROM statements s JOIN tenants t ON t.id = s.tenant_id JOIN units u ON u.id = t.unit_id WHERE u.property_id = ? AND s.year = ? ORDER BY u.id").all(propertyId, year) as unknown as Statement[],
-  statement: (id: number) => db.prepare("SELECT * FROM statements WHERE id = ?").get(id) as unknown as Statement | undefined,
-  run: (propertyId: number, year: number) => db.prepare("SELECT * FROM runs WHERE property_id = ? AND year = ?").get(propertyId, year) as unknown as { summary_json: string; checks_json: string; created_at: string } | undefined,
-  statementsForTenant: (tenantId: number) =>
-    db.prepare("SELECT * FROM statements WHERE tenant_id = ? ORDER BY year DESC").all(tenantId) as unknown as Statement[],
-};
+export type Payment = { id: number; org_id?: string; tenant_id: number; paid_on: string; amount_cents: number; note: string | null; created_at: string };
+export type Run = { property_id: number; year: number; summary_json: Json; checks_json: Json; created_at: string };

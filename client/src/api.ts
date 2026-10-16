@@ -1,3 +1,4 @@
+import { accessToken } from "./supabase";
 export type UnitType = "residential" | "commercial" | "garage";
 export type Unit = { id: number; property_id: number; label: string; unit_type: UnitType; area_sqm: number; mea: number; persons: number; heating_kwh: number; water_m3: number };
 export type Pool = "all" | "residential" | "commercial";
@@ -23,10 +24,18 @@ export type Statement = { id: number; tenant_id: number; year: number; total_cen
 export type TenantRow = Tenant & { unit_label: string; property_id: number; property_name: string; lease_rules: boolean; latest: { id: number; year: number; balance_cents: number; sent_at: string | null; payment_status: PaymentStatus; paid_at: string | null } | null };
 export type Extraction = { provider: string; category: string; description: string; amount_cents: number; period_start: string; period_end: string; allocation_key: string; pool?: Pool; allocable: boolean; non_allocable_cents: number; non_allocable_reason: string; co2_cents: number; energy_kwh: number; meter_note?: string; confidence: number; notes: string };
 
+export type Organization = { id: string; name: string; landlord_name: string | null; landlord_address: string | null; iban: string | null; contact_email: string | null };
+
 export class ApiError extends Error { status: number; constructor(status: number, msg: string) { super(msg); this.status = status; } }
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, { credentials: "same-origin", ...init });
+  // Landlord calls carry the Supabase access token; the server queries Postgres as this user (RLS).
+  const headers = new Headers(init?.headers);
+  if (!url.startsWith("/api/portal") && !url.startsWith("/api/tenant-")) {
+    const token = await accessToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+  const r = await fetch(url, { credentials: "same-origin", ...init, headers });
   if (!r.ok) {
     let msg = r.statusText;
     try { msg = (await r.json()).error ?? msg; } catch { /* ignore */ }
@@ -37,14 +46,13 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 export const api = {
-  login: (email: string, password: string) => req<{ ok: true }>("/api/login", json({ email, password })),
+  me: () => req<{ email: string; org: Organization | null }>("/api/me"),
+  updateOrganization: (body: Partial<Organization>) => req<Organization>("/api/organization", { ...json(body), method: "PATCH" }),
+  loadDemo: () => req<{ ok: true }>("/api/demo", { method: "POST" }),
   tenantLogin: (email: string, password: string) => req<{ ok: true }>("/api/tenant-login", json({ email, password })),
   tenantRegister: (email: string, code: string, password: string) => req<{ ok: true }>("/api/tenant-register", json({ email, code, password })),
-  publicConfig: () => req<{ demo: boolean; prefill: { landlord_email: string; landlord_password: string } | null }>("/api/public-config"),
   resetAccess: (tenantId: number) => req<Tenant>(`/api/tenants/${tenantId}/reset-access`, { method: "POST" }),
   tenantLogout: () => req("/api/tenant-logout", { method: "POST" }),
-  logout: () => req("/api/logout", { method: "POST" }),
-  me: () => req<{ role: string }>("/api/me"),
   properties: () => req<Property[]>("/api/properties"),
   meta: () => req<{ categories: string[]; default_key: Record<string, string> }>("/api/meta"),
   invoices: (pid: number, year?: number) => req<Invoice[]>(`/api/properties/${pid}/invoices${year ? `?year=${year}` : ""}`),
@@ -62,7 +70,6 @@ export const api = {
   deletePayment: (id: number) => req<void>(`/api/payments/${id}`, { method: "DELETE" }),
   setPayment: (sid: number, body: { status: PaymentStatus; paid_at?: string; paid_cents?: number; note?: string }) => req<Statement>(`/api/statements/${sid}/payment`, { ...json(body), method: "PATCH" }),
   generate: (pid: number, year: number) => req<Run>(`/api/properties/${pid}/statements/generate`, json({ year })),
-  reset: () => req<{ ok: true }>("/api/reset", { method: "POST" }),
   waitlist: (email: string, units: number | null) => req<{ ok: true }>("/api/waitlist", json({ email, units })),
   updateProperty: (id: number, body: { name?: string; address?: string }) => req<Property>(`/api/properties/${id}`, { ...json(body), method: "PATCH" }),
   createProperty: (body: { name: string; address: string }) => req<Property>("/api/properties", json(body)),

@@ -15,7 +15,9 @@ const CAT_DE: Record<string, string> = {
 };
 
 /** Statement PDF in the layout German tenants know: account · distribution · quantities (total / yours) · costs (total / yours). */
-export function statementPdf(property: Property, s: TenantStatement, portalUrl: string): Promise<Buffer> {
+export type Sender = { landlord_name?: string | null; landlord_address?: string | null; iban?: string | null; contact_email?: string | null; name?: string | null };
+
+export function statementPdf(property: Property, s: TenantStatement, portalUrl: string, sender: Sender = {}): Promise<Buffer> {
   return new Promise((resolve) => {
     const doc = new PDFDocument({ size: "A4", margin: 50, info: { Title: `Betriebskostenabrechnung ${s.year} ${s.tenant.name}` } });
     const chunks: Buffer[] = [];
@@ -25,17 +27,29 @@ export function statementPdf(property: Property, s: TenantStatement, portalUrl: 
     const periodStart = s.tenant.move_in && s.tenant.move_in > `${s.year}-01-01` ? s.tenant.move_in : `${s.year}-01-01`;
     const periodEnd = s.tenant.move_out && s.tenant.move_out < `${s.year}-12-31` ? s.tenant.move_out : `${s.year}-12-31`;
 
+    // ---- letter head: sender line, recipient, date (DIN-5008-like) ----
+    const senderName = sender.landlord_name || sender.name || "";
+    const senderAddr = (sender.landlord_address ?? "").replace(/\s*\n\s*/g, ", ");
+    let T = 50;
+    if (senderName || senderAddr) {
+      doc.font("Helvetica").fontSize(7.5).fillColor("#555").text([senderName, senderAddr].filter(Boolean).join(" · "), L, 50, { width: 300 }).fillColor("#000");
+      doc.fontSize(10).text(s.tenant.name, L, 66).text(`${property.address || property.name}`, L, doc.y).text(`Einheit ${s.unit.label}`, L, doc.y);
+      doc.fontSize(9).text(`${de(new Date().toISOString().slice(0, 10))}`, L, 66, { width: W, align: "right" });
+      if (sender.contact_email) doc.text(sender.contact_email, L, doc.y, { width: W, align: "right" });
+      T = 130;
+    }
+
     // ---- header ----
     const head = property.address.startsWith(property.name) ? property.address : `${property.name}, ${property.address}`;
-    doc.font("Helvetica-Bold").fontSize(12).text(`${head} / 01.01.${s.year} - 31.12.${s.year} - Einzelabrechnung`, L, 50, { width: W });
+    doc.font("Helvetica-Bold").fontSize(12).text(`${head} / 01.01.${s.year} - 31.12.${s.year} - Einzelabrechnung`, L, T, { width: W });
     doc.font("Helvetica").fontSize(9).fillColor("#333")
-      .text(`${s.unit.label}`, L, 72, { width: W, align: "right" })
-      .text(`Nutzungszeitraum: ${de(periodStart)} - ${de(periodEnd)}`, L, 84, { width: W, align: "right" })
+      .text(`${s.unit.label}`, L, T + 22, { width: W, align: "right" })
+      .text(`Nutzungszeitraum: ${de(periodStart)} - ${de(periodEnd)}`, L, T + 34, { width: W, align: "right" })
       .fillColor("#000");
-    doc.fontSize(10).text(`Mieter: ${s.tenant.name}`, L, 84);
+    doc.fontSize(10).text(`Mieter: ${s.tenant.name}`, L, T + 34);
 
     // ---- 1. table ----
-    let y = 115;
+    let y = T + 65;
     doc.font("Helvetica-Bold").fontSize(11).text("1. Einzelabrechnungsrelevante Ausgaben", L, y); y += 20;
     const cols = { konto: L, vert: 175, mgG: 300, mgA: 360, ausG: 425, ausA: 490 };
     const wG = 55, wA = 50;
@@ -90,7 +104,7 @@ export function statementPdf(property: Property, s: TenantStatement, portalUrl: 
       .text(eur(Math.abs(s.balance_cents)), 300, y, { width: 100, align: "right", underline: true }); y += 24;
     doc.font("Helvetica").fontSize(10);
     const deadline = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
-    doc.text(due ? `Bitte überweisen Sie den Betrag bis spätestens ${de(deadline)}.` : `Das Guthaben wird Ihnen innerhalb von 30 Tagen überwiesen.`, L, y); y += 22;
+    doc.text(due ? `Bitte überweisen Sie den Betrag bis spätestens ${de(deadline)}${sender.iban ? ` auf das Konto ${sender.iban}${senderName ? ` (${senderName})` : ""}` : ""}.` : `Das Guthaben wird Ihnen innerhalb von 30 Tagen überwiesen.`, L, y, { width: W }); y = doc.y + 10;
     if (s.suggested_prepayment_cents > 0 && Math.abs(s.suggested_prepayment_cents - s.tenant.monthly_prepayment_cents) >= 500) {
       const up = s.suggested_prepayment_cents > s.tenant.monthly_prepayment_cents;
       doc.font("Helvetica-Bold").text(`Aufgrund der ${up ? "gestiegenen" : "gesunkenen"} Kosten ${up ? "erhöht" : "verringert"} sich die Betriebskostenvorauszahlung ab dem 01.01.${s.year + 1} auf ${eur(s.suggested_prepayment_cents)} (§ 560 Abs. 4 BGB). Wir bitten Sie, die monatliche Zahlung anzupassen.`, L, y, { width: W }); y += 34;
