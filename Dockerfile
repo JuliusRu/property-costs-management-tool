@@ -1,5 +1,5 @@
 # ---- build the React client ----
-FROM node:24-alpine AS client
+FROM node:24.22.1-alpine AS client
 WORKDIR /app/client
 COPY client/package*.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY client/ ./
 RUN npm run build
 
 # ---- runtime: Express + node:sqlite serves API and the built client ----
-FROM node:24-alpine
+FROM node:24.22.1-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
